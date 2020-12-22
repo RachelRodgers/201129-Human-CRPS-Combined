@@ -1,0 +1,196 @@
+---
+title: "Human CRPS Combined Cohorts 16S Analysis"
+author: "Rachel Rodgers & Marie Crane"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width=8,
+                      fig.height=6,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+```{r load-libraries, message=FALSE, include=FALSE}
+library("phyloseq")
+library("vegan")
+library("microbiome")
+library("picante")
+library("ggrepel")
+library("ggpubr")
+library("gridExtra")
+library("scales")
+library("tidyverse")
+
+source("./shared_R_scripts/Helper_Functions.R")
+```
+
+# Overview
+
+---
+
+Analysis of combined human CRPS cohorts:
+  * Run 1: 190201 (6 samples)
+  * Run 2: 190318 (10 samples)
+  * Run 3: 190523 (10 samples)
+  * Run 4: 200127 (20 samples)
+  * Run 5: 201019 (24 samples)
+
+These cohorts include acute and chronic CRPS patients with their matched household controls, as well as unrelated, healthy "BioBank" controls.
+
+Analyzed:
+
+1. Three groups ("sample_type" groups):
+  * CRPS
+  * HHC
+  * BioBank ("healthy")
+
+
+2. Six groups ("crps_match" groups):
+  * Acute CRPS
+  * Chronic CRPS
+  * Acute HHC
+  * Chronic HHC
+  * Acute-matched BioBank
+  * Chronic-matched BioBank
+
+----
+
+```{r read-in-data}
+physeqRaw <- readRDS("../data/physeqObjects/ps0.rdp_single.RDS")
+physeqRaw # 2115 taxa x 69 samples
+
+sampleData <- readRDS("../data/sampleDataModified.RDS")
+```
+
+```{r physeqMerged}
+# add readsPerSample to sample data prior to merging
+readsPerSample <- sample_sums(physeqRaw)
+sampleData <- mutate(sampleData, 
+                     "readsPerSample" = readsPerSample[sample])
+
+row.names(sampleData) <- sampleData$sample
+physeqMerged <- merge_phyloseq(physeqRaw, sample_data(sampleData))
+physeqMerged # 2115 x 69
+```
+
+# Quality Control
+
+## Sample Outlier Removal by Unexpected Read Count
+
+Checking the average read count across all samples to determine if any have unexpected numbers of reads.
+
+```{r fxn-PlotAvgReads}
+# sample_type = 3 groups
+# crps_match = 6 groups
+groupCategories <- c("sample type" = "sample_type",
+                     "CRPS match" = "crps_match")
+
+PlotAvgReads <- function(df, xVar, yVar, groupVar, 
+                         plotTitle = NULL, thresh = 1000,
+                         labelSamples = FALSE,
+                         includeStats = FALSE) {
+  
+  basePlot <- ggplot(df, aes_string(x = xVar, y = yVar, fill = groupVar)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(width = 0.2, alpha = 0.75) +
+    geom_hline(yintercept = thresh, lty = 2) +
+    ylab("Reads per Sample") +
+    ggtitle(plotTitle) +
+    scale_y_log10() +
+    theme_pubr() +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size = 10)) 
+  
+  if (labelSamples == TRUE) {
+    basePlot <- basePlot + 
+      geom_text_repel(aes(label = paste(sample, ": ", readsPerSample)),
+                    data = subset(df, readsPerSample <= thresh))
+  }
+  
+  if (includeStats == TRUE) {
+    basePlot <- basePlot +
+      stat_compare_means(method = "kruskal.test", label.x.npc = 0)
+  }
+  
+  return(basePlot)
+
+}
+```
+
+```{r avgReadsPlot, fig.width=11, fig.height=8.5}
+avgReadsPlots <- pmap(.l = list(xVar = groupCategories,
+                                groupVar = groupCategories,
+                                plotTitle = c("sample type" = "Average Reads by Sample Type",
+                                              "CRPS match" = "Average Reads by CRPS Matched Groups")),
+                      .f = PlotAvgReads,
+                      df = sampleData, yVar = "readsPerSample",
+                      labelSamples = TRUE, includeStats = FALSE)
+
+ggarrange(plotlist = avgReadsPlots, ncol = 1, nrow = 2)
+```
+
+From the box plots of average reads per group, we can see there are several BioBank control samples and a technical control with low reads.  These samples will be dropped from analysis.
+
+```{r physeqTrimmed}
+lowReadSamples <- sampleData %>% 
+  filter(readsPerSample <= 1000) %>% 
+  pull(sample) %>% 
+  as.character()
+
+physeqTrimmed <- physeqMerged %>% 
+  subset_samples(!(sample %in% lowReadSamples)) %>% 
+  RemoveMissingTaxa()
+physeqTrimmed # 2108 x 64 samples
+```
+
+Removal of samples having fewer than 1000 reads reduced the total samples from 69 to 64, and total taxa from 2,115 to 2,108.
+
+Replotting average reads per group to ensure there is no significant difference in average read numbers:
+
+```{r avgReadsPlots-after-filtering, fig.width=11, fig.height=8.5}
+sampleDataTrimmed <- as(sample_data(physeqTrimmed), "data.frame")
+
+avgReadsPlotsTrimmed <- pmap(.l = list(xVar = groupCategories,
+                                       groupVar = groupCategories,
+                             plotTitle = c("sample type" = "Average Reads by Sample Type",
+                                           "CRPS match" = "Average Reads by CRPS Matched Groups")),
+                             .f = PlotAvgReads,
+                             df = sampleDataTrimmed, yVar = "readsPerSample",
+                             labelSamples = FALSE, includeStats = TRUE)
+
+ggarrange(plotlist = avgReadsPlotsTrimmed, ncol = 1, nrow = 2)
+```
+
+Because a significant difference still exists between groups, we will rarefy the data set downstream.
+
+## Taxa Filtering
+
+Non-bacterial taxa need to be removed from the data set.
+
+```{r filter-non-bacterial}
+physeqBacteria <- physeqTrimmed %>% 
+  subset_taxa(Kingdom == "Bacteria" & Phylum != "Cyanobacteria/Chloroplast")
+
+# did this deplete any samples?
+any(sample_sums(physeqBacteria) == 0) # no
+
+physeqBacteria
+```
+
+Removal of non-bacterial taxa furhter reduces total taxa in the data set from 2,108 to 2,054.
+
+## Rarefy
+
+```{r rarefy}
+physeqBacteriaRare <- rarefy_even_depth(physeqBacteria, rngseed = 2236001)
+physeqBacteriaRare # 1,612 taxa
+```
+
+```{r save-rarefy}
+saveRDS(physeqBacteriaRare, file = "../data/physeqObjects/physeqBacteriaRare.RDS")
+```
+
