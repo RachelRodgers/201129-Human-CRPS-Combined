@@ -2,7 +2,9 @@
 title: "Human CRPS Combined Cohorts 16S Analysis"
 author: "Rachel Rodgers & Marie Crane"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
-output: html_document
+output: 
+  html_document:
+    code_folding: hide
 ---
 
 ```{r setup, include=FALSE}
@@ -26,7 +28,7 @@ library("tidyverse")
 source("./shared_R_scripts/Helper_Functions.R")
 ```
 
-# Overview
+## Overview
 
 ---
 
@@ -75,9 +77,9 @@ physeqMerged <- merge_phyloseq(physeqRaw, sample_data(sampleData))
 physeqMerged # 2115 x 69
 ```
 
-# Quality Control
+## Quality Control
 
-## Sample Outlier Removal by Unexpected Read Count
+### Sample Outlier Removal by Unexpected Read Count
 
 Checking the average read count across all samples to determine if any have unexpected numbers of reads.
 
@@ -165,14 +167,25 @@ avgReadsPlotsTrimmed <- pmap(.l = list(xVar = groupCategories,
 ggarrange(plotlist = avgReadsPlotsTrimmed, ncol = 1, nrow = 2)
 ```
 
-Because a significant difference still exists between groups, we will rarefy the data set downstream.
+Because a significant difference still exists between groups, we will rarefy the data set.
 
-## Taxa Filtering
+### Rarefy
+
+```{r rarefy}
+physeqRare <- rarefy_even_depth(physeqTrimmed, rngseed = 2236001)
+physeqRare # 1,612 taxa
+```
+
+```{r save-rarefy, eval=FALSE}
+saveRDS(physeqRare, file = "../data/physeqObjects/physeqRare.RDS")
+```
+
+### Taxa Filtering & Abundance
 
 Non-bacterial taxa need to be removed from the data set.
 
 ```{r filter-non-bacterial}
-physeqBacteria <- physeqTrimmed %>% 
+physeqBacteria <- physeqRare %>% 
   subset_taxa(Kingdom == "Bacteria" & Phylum != "Cyanobacteria/Chloroplast")
 
 # did this deplete any samples?
@@ -183,14 +196,55 @@ physeqBacteria
 
 Removal of non-bacterial taxa furhter reduces total taxa in the data set from 2,108 to 2,054.
 
-## Rarefy
+Checking the prevalence and abundance values of different bacterial families to see if there are any low abundance/prevalence taxa.
 
-```{r rarefy}
-physeqBacteriaRare <- rarefy_even_depth(physeqBacteria, rngseed = 2236001)
-physeqBacteriaRare # 1,612 taxa
+```{r phylaPrevalence, fig.width=9, fig.height=6}
+phylaPrevalence <- TaxRankPrevalence(physeqBacteria, "Phylum")
+phylaPrevalence$prevalence_table
+
+phylaPrevalencePlot <- ggplot(phylaPrevalence$prevalence_df,
+                              aes(x = TotalAbundance,
+                                  y = Prevalence/nsamples(physeqBacteria),
+                                  color = Family)) +
+  geom_hline(yintercept = 1/207, alpha = 0.5, linetype = 2) +
+  geom_point(size = 3, alpha = 0.7) +
+  scale_x_log10() +
+  xlab("Total Abundance") +
+  ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~ Phylum) +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5)) +
+  ggtitle("Phylum Prevalence in All Samples",
+          subtitle = "Colored by Familiy")
+phylaPrevalencePlot
 ```
 
-```{r save-rarefy}
-saveRDS(physeqBacteriaRare, file = "../data/physeqObjects/physeqBacteriaRare.RDS")
+From the prevalence plots, we can see that several low-abundance/low-prevalence taxa are present in the datset, including the Fusocbacteria, Lentisphaerae, and Syngeristetes.  Downstream analysis (such as biomarker analysis) may benefit from removal of these taxa.
+
+## Generate LEfSe Input Data
+
+Comparisons to be conducted:
+  * Acute vs Chronic CRPS
+  * Acute CRPS vs Acute BioBank
+  * Chronic CRPS vs Chronic BioBank
+  * Acute CRPS vs Acute HHC
+  * Chronic CRPS vs Chronic HHC
+  * All CRPS vs All HHC
+  * All CRPS vs All BioBank
+
+```{r, lefse-input, eval=FALSE}
+
 ```
+
+## 16S Analysis
+
+16S analysis should be broken up by the three-group and six-group designation.
+
+### Community Composition Plot (Phylum-level)
+
+### Alpha Diversity (Richness, Shannon Diversity, Faith's Phylogenetic Diversity)
+
+### Beta Diversity (PCoA of unweighted & weighted UniFrac)
 
