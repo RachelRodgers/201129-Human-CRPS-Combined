@@ -5,6 +5,7 @@ date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output: 
   html_document:
     code_folding: hide
+runtime: shiny
 ---
 
 ```{r setup, include=FALSE}
@@ -15,24 +16,35 @@ knitr::opts_chunk$set(fig.width=8,
 ```
 
 ```{r load-libraries, message=FALSE, include=FALSE}
+library("shiny")
 library("phyloseq")
 library("vegan")
+library("gridExtra")
+library("knitr")
+library("DESeq2")
+library("plotly")
 library("microbiome")
-library("picante")
+library("data.table")
 library("ggrepel")
 library("ggpubr")
-library("gridExtra")
 library("scales")
+library("plyr")
+library("DT")
+library("picante")
+library("gridExtra")
 library("tidyverse")
 
 source("./shared_R_scripts/Helper_Functions.R")
+
+options(shiny.sanitize.errors = FALSE)
 ```
 
-## Overview
+## Overview {.tabset}
 
 ---
 
 Analysis of combined human CRPS cohorts:
+
   * Run 1: 190201 (6 samples)
   * Run 2: 190318 (10 samples)
   * Run 3: 190523 (10 samples)
@@ -59,14 +71,14 @@ Analyzed:
 
 ----
 
-```{r read-in-data}
+```{r read-in-data, include=FALSE}
 physeqRaw <- readRDS("../data/physeqObjects/ps0.rdp_single.RDS")
 physeqRaw # 2115 taxa x 69 samples
 
 sampleData <- readRDS("../data/sampleDataModified.RDS")
 ```
 
-```{r physeqMerged}
+```{r physeqMerged, results='hide', include=FALSE}
 # add readsPerSample to sample data prior to merging
 readsPerSample <- sample_sums(physeqRaw)
 sampleData <- mutate(sampleData, 
@@ -77,9 +89,9 @@ physeqMerged <- merge_phyloseq(physeqRaw, sample_data(sampleData))
 physeqMerged # 2115 x 69
 ```
 
-## Quality Control
+### **Quality Control**
 
-### Sample Outlier Removal by Unexpected Read Count
+#### **Sample Outlier Removal by Unexpected Read Count**
 
 Checking the average read count across all samples to determine if any have unexpected numbers of reads.
 
@@ -143,9 +155,11 @@ lowReadSamples <- sampleData %>%
   pull(sample) %>% 
   as.character()
 
-physeqTrimmed <- physeqMerged %>% 
-  subset_samples(!(sample %in% lowReadSamples)) %>% 
+keepSamples <- sampleData$sample[!(sampleData$sample %in% lowReadSamples)]
+
+physeqTrimmed <- prune_samples(keepSamples, physeqMerged) %>% 
   RemoveMissingTaxa()
+
 physeqTrimmed # 2108 x 64 samples
 ```
 
@@ -169,9 +183,8 @@ ggarrange(plotlist = avgReadsPlotsTrimmed, ncol = 1, nrow = 2)
 
 Because a significant difference still exists between groups, we will rarefy the data set.
 
-### Rarefy
-
-```{r rarefy}
+```{r rarefy, results='hide'}
+# Rarefy
 physeqRare <- rarefy_even_depth(physeqTrimmed, rngseed = 2236001)
 physeqRare # 1,612 taxa
 ```
@@ -180,11 +193,11 @@ physeqRare # 1,612 taxa
 saveRDS(physeqRare, file = "../data/physeqObjects/physeqRare.RDS")
 ```
 
-### Taxa Filtering & Abundance
+#### **Taxa Filtering & Abundance**
 
 Non-bacterial taxa need to be removed from the data set.
 
-```{r filter-non-bacterial}
+```{r filter-non-bacterial, results='hide'}
 physeqBacteria <- physeqRare %>% 
   subset_taxa(Kingdom == "Bacteria" & Phylum != "Cyanobacteria/Chloroplast")
 
@@ -194,7 +207,7 @@ any(sample_sums(physeqBacteria) == 0) # no
 physeqBacteria
 ```
 
-Removal of non-bacterial taxa furhter reduces total taxa in the data set from 2,108 to 2,054.
+Removal of non-bacterial taxa further reduces total taxa in the data set from 2,108 to 2,054.
 
 Checking the prevalence and abundance values of different bacterial families to see if there are any low abundance/prevalence taxa.
 
@@ -223,28 +236,390 @@ phylaPrevalencePlot
 
 From the prevalence plots, we can see that several low-abundance/low-prevalence taxa are present in the datset, including the Fusocbacteria, Lentisphaerae, and Syngeristetes.  Downstream analysis (such as biomarker analysis) may benefit from removal of these taxa.
 
-## Generate LEfSe Input Data
+```{r, save-physeqBacteria-for-lefse-input, eval=FALSE, include=FALSE}
+# Save the physeqBacteria oject to generate LEfSe input data
+saveRDS(physeqBacteria, "../data/physeqObjects/physeqBacteria.RDS")
+```
 
-Comparisons to be conducted:
-  * Acute vs Chronic CRPS
-  * Acute CRPS vs Acute BioBank
-  * Chronic CRPS vs Chronic BioBank
-  * Acute CRPS vs Acute HHC
-  * Chronic CRPS vs Chronic HHC
-  * All CRPS vs All HHC
-  * All CRPS vs All BioBank
+```{r analysis-globals}
+# Data that can be used for both 3 and 6 group comparisons
+sampleDataBacteria <- as(sample_data(physeqBacteria), "data.frame")
 
-```{r, lefse-input, eval=FALSE}
+# Alpha Diversity
+alphaIdxList <- list("Richness" = "observed",
+                     "Shannon Diversity" = "diversity_shannon", 
+                     "Faith's PD" = "PD")
+
+alphaDiv <- microbiome::alpha(physeqBacteria, index = c("observed",
+                                                        "diversity_shannon"))
+
+faithsPD <- pd(as.data.frame(physeqBacteria@otu_table),
+               physeqBacteria@phy_tree,
+               include.root = FALSE)
+
+allAlphaDiv <- merge(alphaDiv, faithsPD, by = "row.names", all = TRUE)
+allAlphaDiv <- column_to_rownames(allAlphaDiv, var = "Row.names")
+
+sampleDataBacteria <- merge(allAlphaDiv, sampleDataBacteria,
+                            by = "row.names", all = TRUE) %>% 
+  column_to_rownames(var = "Row.names")
+```
+
+
+### **16S Analysis (3 groups)**
+
+---
+
+Three groups:
+
+  * CRPS
+  * HHC
+  * BioBank Control
+
+#### **Community Composition Plot**
+
+```{r comm-comp-3groups}
+#----- UI -----#
+
+inputPanel(
+  # select taxonomic rank
+  selectInput(inputId = "commTaxRank3", label = "Taxonomic Rank",
+              choices = c("Kingdom", "Phylum", "Class", "Order", "Family",
+                          "Genus", "Species"),
+              selected = "Phylum"),
+  # select abundance filter
+  sliderInput(inputId = "commAbdFilter3", label = "Abundance Filter",
+              min = 0, max = 1, step = 0.05, value = 0),
+  # hide NA?
+  checkboxInput(inputId = "commHideNA3", label = "Hide unnamed taxa", 
+                value = FALSE)
+)
+
+# update plot:
+actionButton(inputId = "commUpdate3", label = "Update Composition Plot",
+             icon = icon("fas fa-sync-alt"))
+
+#----- React -----#
+
+CalculateAbundance3 <- eventReactive(input$commUpdate3, {
+  
+  withProgress(message = "Calculating Abundance...", value = 1, {
+                 abdDF <- MakeAbundanceDF(physeq = physeqBacteria,
+                                          taxRank = input$commTaxRank3,
+                                          abundanceFilter = input$commAbdFilter3,
+                                          pruneMissing = input$commHideNA3)
+
+                 if (dim(abdDF)[1] == 0) {
+                   stop("No taxa meet this filtering criteria. 
+                        Try lowering the Abundance Filter option.",
+                        call. = FALSE)
+                 } else {
+                   if (input$commTaxRank3 == "Species") {
+                     
+                     abdDF <- mutate(abdDF,
+                                     "GenusSpecies" = paste(Genus, Species, 
+                                                            sep = " "),
+                                     no = "other")
+                   }
+                 }
+                 abdDF
+               })
+}, ignoreNULL = FALSE)
+
+
+renderPlotly({
+  compPlot <- PlotCommunityComposition(abdDF = CalculateAbundance3(),
+                                       taxRank = ifelse(isolate(input$commTaxRank3) == "Species",
+                                                        yes = "GenusSpecies",
+                                                        no = isolate(input$commTaxRank3)),
+                                       facetFormula = "~ sample_type")
+  
+  ggplotly(compPlot, height = 600, width = 1000)
+})
 
 ```
 
-## 16S Analysis
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
 
-16S analysis should be broken up by the three-group and six-group designation.
 
-### Community Composition Plot (Phylum-level)
+#### **Alpha Diversity**
 
-### Alpha Diversity (Richness, Shannon Diversity, Faith's Phylogenetic Diversity)
+```{r alpha-div-3groups, fig.width=11, fig.height=11}
+alphaDivPlots3 <- pmap(.l = list(yVar = alphaIdxList,
+                                 yLab = names(alphaIdxList)),
+                       .f = PlotAlphaDiversity,
+                       df = sampleDataBacteria,
+                       xVar = "sample_type",
+                       statMethod = "kruskal.test")
 
-### Beta Diversity (PCoA of unweighted & weighted UniFrac)
+grid.arrange(alphaDivPlots3$Richness,
+             alphaDivPlots3$`Shannon Diversity`,
+             alphaDivPlots3$`Faith's PD`,
+             ncol = 2, nrow = 2)
+```
 
+<br>
+<br>
+<br>
+
+#### **Beta Diversity**
+
+```{r beta-div-3groups}
+#----- UI -----#
+
+inputPanel(
+  # select distance method
+  radioButtons(inputId = "betaDist3", label = "Distance Method:",
+               choices = c("UniFrac" = "unifrac",
+                           "Weighted UniFrac" = "wunifrac"),
+               selected = "unifrac"),
+  # show sample names
+  checkboxInput(inputId = "betaShowNames3", label = "Show point labels",
+                value = FALSE),
+  # show confidence ellipses
+  checkboxInput(inputId = "betaShowEllipses3", 
+                label = "Show confidence ellipses", value = TRUE)
+)
+
+#----- React -----#
+
+CalculateOrdination3 <- reactive({
+  withProgress(message = "Calculating ordination (3 groups)...", value = 1, {
+    # Generate ordination object
+    set.seed(1648370)
+    ordinationObj <- ordinate(physeqBacteria, method = "PCoA",
+                              distance = input$betaDist3)
+  })
+})
+
+renderPlot({
+  basePlot <- plot_ordination(physeqBacteria,
+                              ordination = CalculateOrdination3(),
+                              color = "sample_type", shape = "sample_type") +
+    theme_bw() +
+    theme(legend.title = element_text(size = 18),
+          legend.text = element_text(size = 16),
+          axis.title.x = element_text(size = 14),
+          axis.title.y = element_text(size = 14),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 12)) +
+    geom_point(size = 4)
+  
+  if (input$betaShowNames3) {
+    basePlot <- basePlot +
+      geom_text_repel(aes_string(label = "sample"), color = "grey30", size = 4)
+  }
+  
+  if (input$betaShowEllipses3 == TRUE) {
+    basePlot <- basePlot + stat_ellipse(type = "norm")
+  }
+  
+  basePlot
+  
+}, height = 600, width = 900)
+
+```
+
+**ADONIS Results for selected Week and Distance Measure:**
+
+```{r beta-adonis-3groups}
+renderPrint(
+  RunAdonis(physeqObj = physeqBacteria,
+            category = "sample_type", distance = input$betaDist3)
+)
+```
+
+### **16S Analysis (6 groups)**
+
+---
+
+Six groups ("crps_match" groups):
+
+  * Acute CRPS (CRPSA)
+  * Chronic CRPS (CRPSC)
+  * Acute HHC (HHCA)
+  * Chronic HHC (HHCC)
+  * Acute-matched BioBank (NRAM)
+  * Chronic-matched BioBank (NRCM)
+  
+#### **Community Composition Plot**
+
+```{r comm-comp-6groups}
+#----- UI -----#
+
+inputPanel(
+  # select taxonomic rank
+  selectInput(inputId = "commTaxRank6", label = "Taxonomic Rank",
+              choices = c("Kingdom", "Phylum", "Class", "Order", "Family",
+                          "Genus", "Species"),
+              selected = "Phylum"),
+  # select abundance filter
+  sliderInput(inputId = "commAbdFilter6", label = "Abundance Filter",
+              min = 0, max = 1, step = 0.05, value = 0),
+  # hide NA?
+  checkboxInput(inputId = "commHideNA6", label = "Hide unnamed taxa", 
+                value = FALSE)
+)
+
+# update plot:
+actionButton(inputId = "commUpdate6", label = "Update Composition Plot",
+             icon = icon("fas fa-sync-alt"))
+
+#----- React -----#
+
+CalculateAbundance6 <- eventReactive(input$commUpdate6, {
+  
+  withProgress(message = "Calculating Abundance...", value = 1, {
+                 abdDF <- MakeAbundanceDF(physeq = physeqBacteria,
+                                          taxRank = input$commTaxRank6,
+                                          abundanceFilter = input$commAbdFilter6,
+                                          pruneMissing = input$commHideNA6)
+
+                 if (dim(abdDF)[1] == 0) {
+                   stop("No taxa meet this filtering criteria. 
+                        Try lowering the Abundance Filter option.",
+                        call. = FALSE)
+                 } else {
+                   if (input$commTaxRank6 == "Species") {
+                     
+                     abdDF <- mutate(abdDF,
+                                     "GenusSpecies" = paste(Genus, Species, 
+                                                            sep = " "),
+                                     no = "other")
+                   }
+                 }
+                 abdDF
+               })
+}, ignoreNULL = FALSE)
+
+
+renderPlotly({
+  compPlot <- PlotCommunityComposition(abdDF = CalculateAbundance6(),
+                                       taxRank = ifelse(isolate(input$commTaxRank3) == "Species",
+                                                        yes = "GenusSpecies",
+                                                        no = isolate(input$commTaxRank3)),
+                                       facetFormula = "~ crps_match")
+  
+  ggplotly(compPlot, height = 600, width = 1000)
+})
+
+```
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+
+#### **Alpha Diversity**
+
+```{r alpha-div-6groups, fig.width=11, fig.height=11}
+alphaDivPlots6 <- pmap(.l = list(yVar = alphaIdxList,
+                                 yLab = names(alphaIdxList)),
+                       .f = PlotAlphaDiversity,
+                       df = sampleDataBacteria,
+                       xVar = "crps_match",
+                       statMethod = "kruskal.test")
+
+grid.arrange(alphaDivPlots6$Richness,
+             alphaDivPlots6$`Shannon Diversity`,
+             alphaDivPlots6$`Faith's PD`,
+             ncol = 2, nrow = 2)
+```
+
+<br>
+<br>
+<br>
+
+#### **Beta Diversity**
+
+```{r beta-div-6groups}
+#----- UI -----#
+
+inputPanel(
+  # select distance method
+  radioButtons(inputId = "betaDist6", label = "Distance Method:",
+               choices = c("UniFrac" = "unifrac",
+                           "Weighted UniFrac" = "wunifrac"),
+               selected = "unifrac"),
+  # show sample names
+  checkboxInput(inputId = "betaShowNames6", label = "Show point labels",
+                value = FALSE),
+  # show confidence ellipses
+  checkboxInput(inputId = "betaShowEllipses6", 
+                label = "Show confidence ellipses", value = TRUE)
+)
+
+#----- React -----#
+
+CalculateOrdination6 <- reactive({
+  withProgress(message = "Calculating ordination (6 groups)...", value = 1, {
+    # Generate ordination object
+    set.seed(1648370)
+    ordinationObj <- ordinate(physeqBacteria, method = "PCoA",
+                              distance = input$betaDist6)
+  })
+})
+
+renderPlot({
+  basePlot <- plot_ordination(physeqBacteria,
+                              ordination = CalculateOrdination6(),
+                              color = "sample_type", shape = "sample_type") +
+    theme_bw() +
+    theme(legend.title = element_text(size = 18),
+          legend.text = element_text(size = 16),
+          axis.title.x = element_text(size = 14),
+          axis.title.y = element_text(size = 14),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 12)) +
+    geom_point(size = 4)
+  
+  if (input$betaShowNames6) {
+    basePlot <- basePlot +
+      geom_text_repel(aes_string(label = "sample"), color = "grey30", size = 4)
+  }
+  
+  if (input$betaShowEllipses6 == TRUE) {
+    basePlot <- basePlot + stat_ellipse(type = "norm")
+  }
+  
+  basePlot
+  
+}, height = 600, width = 900)
+
+```
+
+**ADONIS Results for selected Week and Distance Measure:**
+
+```{r beta-adonis-6groups}
+renderPrint(
+  RunAdonis(physeqObj = physeqBacteria,
+            category = "crps_match", distance = input$betaDist6)
+)
+```
+
+<br>
+
+### Session Info
+
+```{r session-info}
+Sys.Date()
+getwd()
+sessionInfo()
+```
+  
