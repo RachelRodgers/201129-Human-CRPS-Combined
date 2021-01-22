@@ -1,6 +1,6 @@
 ---
-title: "Human CRPS Combined Cohorts 16S Analysis"
-author: "Rachel Rodgers & Marie Crane"
+title: "Human CRPS Combined Cohorts 16S Analysis (Rarefied)"
+author: "Rachel Rodgers"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output: 
   html_document:
@@ -21,7 +21,6 @@ library("phyloseq")
 library("vegan")
 library("gridExtra")
 library("knitr")
-library("DESeq2")
 library("plotly")
 library("microbiome")
 library("data.table")
@@ -68,6 +67,11 @@ Analyzed:
   * Chronic HHC
   * Acute-matched BioBank
   * Chronic-matched BioBank
+  
+3. Comparisons to BioBank (Non-related) Controls
+  * all CRPS vs all BioBank 
+  * Chronic CRPS vs Chronic-matched BioBank
+  * Acute CRPS vs Chronic-matched BioBank
 
 ----
 
@@ -243,9 +247,11 @@ saveRDS(physeqBacteria, "../data/physeqObjects/physeqBacteria.RDS")
 
 ```{r analysis-globals}
 # Data that can be used for both 3 and 6 group comparisons
+
+#----- Alpha Diversity DF -----#
+
 sampleDataBacteria <- as(sample_data(physeqBacteria), "data.frame")
 
-# Alpha Diversity
 alphaIdxList <- list("Richness" = "observed",
                      "Shannon Diversity" = "diversity_shannon", 
                      "Faith's PD" = "PD")
@@ -265,10 +271,7 @@ sampleDataBacteria <- merge(allAlphaDiv, sampleDataBacteria,
   column_to_rownames(var = "Row.names")
 ```
 
-
 ### **16S Analysis (3 groups)**
-
----
 
 Three groups:
 
@@ -432,6 +435,7 @@ renderPlot({
 **ADONIS Results for selected Week and Distance Measure:**
 
 ```{r beta-adonis-3groups}
+set.seed(1648370)
 renderPrint(
   RunAdonis(physeqObj = physeqBacteria,
             category = "sample_type", distance = input$betaDist3)
@@ -439,8 +443,6 @@ renderPrint(
 ```
 
 ### **16S Analysis (6 groups)**
-
----
 
 Six groups ("crps_match" groups):
 
@@ -504,9 +506,9 @@ CalculateAbundance6 <- eventReactive(input$commUpdate6, {
 
 renderPlotly({
   compPlot <- PlotCommunityComposition(abdDF = CalculateAbundance6(),
-                                       taxRank = ifelse(isolate(input$commTaxRank3) == "Species",
+                                       taxRank = ifelse(isolate(input$commTaxRank6) == "Species",
                                                         yes = "GenusSpecies",
-                                                        no = isolate(input$commTaxRank3)),
+                                                        no = isolate(input$commTaxRank6)),
                                        facetFormula = "~ crps_match")
   
   ggplotly(compPlot, height = 600, width = 1000)
@@ -607,9 +609,293 @@ renderPlot({
 **ADONIS Results for selected Week and Distance Measure:**
 
 ```{r beta-adonis-6groups}
+set.seed(1648370)
 renderPrint(
   RunAdonis(physeqObj = physeqBacteria,
             category = "crps_match", distance = input$betaDist6)
+)
+```
+
+<br>
+
+### **BioBank Comparisons**
+
+Comparisons to BioBank (Non-related) Controls:
+
+  * all CRPS vs all BioBank 
+  * Chronic CRPS vs Chronic-matched BioBank
+  * Acute CRPS vs Chronic-matched BioBank
+  
+```{r biobank-globals}
+
+#----- physeqSubsetList -----#
+
+# Subsets:
+#   All CRPS & All BioBank (physeqCRPSBB)
+#   Chronic CRPS & Chronic BioBank (physeqChronicBB)
+#   Acute CRPS & Acute BioBank (physeqAcuteBB)
+
+comparisonLabels <- c("CRPS_BB", "Chronic_BB", "Acute_BB")
+
+conditionVecList <- list(c("CRPS", "BioBank_Control"),
+                         c("CRPSC", "NRCM"),
+                         c("CRPSA", "NRAM"))
+names(conditionVecList) <- comparisonLabels
+
+columnVarList <- list("sample_type",
+                      "crps_match",
+                      "crps_match")
+names(columnVarList) <- comparisonLabels
+
+physeqSubsetList <- vector(mode = "list", length = length(comparisonLabels))
+
+samplesByConditionList <- vector(mode = "list", length = length(comparisonLabels))
+
+for (i in 1:length(comparisonLabels)) {
+  
+  comparison <- comparisonLabels[i]
+  conditionVec <- conditionVecList[[comparison]]
+  column <- columnVarList[[comparison]]
+  
+  keepSamples <- sampleDataBacteria %>% 
+    filter(!!(sym(column)) %in% conditionVec) %>% 
+    pull(sample)
+  
+  samplesByConditionList[[i]] <- keepSamples
+  names(samplesByConditionList)[i] <- comparison
+  
+  psSubset <- prune_samples(keepSamples, physeqBacteria) %>% 
+    RemoveMissingTaxa()
+  
+  physeqSubsetList[[i]] <- psSubset
+  names(physeqSubsetList)[i] <- comparison
+}
+
+#----- Alpha Diversity DFs -----#
+
+alphaDivDFList <- vector(mode = "list", length = length(comparisonLabels))
+
+for (i in 1:length(comparisonLabels)) {
+  
+  comparison <- comparisonLabels[i]
+  samples <- samplesByConditionList[[comparison]]
+  
+  sampleDataFilt <- filter(sampleDataBacteria, sample %in% samples)
+  
+  alphaDivDFList[[i]] <- sampleDataFilt
+  names(alphaDivDFList)[i] <- comparison
+}
+```
+
+#### **Community Composition Plots** 
+
+```{r comm-comp-biobank}
+#----- UI -----#
+
+inputPanel(
+  # select phyloseq object
+  selectInput(inputId = "commPSObjBB", label = "Comparison:",
+              choices = c("All CRPS vs All BioBank" = "CRPS_BB",
+                          "Chronic CRPS vs Chronic BioBank" = "Chronic_BB",
+                          "Acute CRPS vs Acute BioBank" = "Acute_BB"),
+              selected = "CRPS_BB"),
+  # select taxonomic rank
+  selectInput(inputId = "commTaxRankBB", label = "Taxonomic Rank",
+              choices = c("Kingdom", "Phylum", "Class", "Order", "Family",
+                          "Genus", "Species"),
+              selected = "Phylum"),
+  # select abundance filter
+  sliderInput(inputId = "commAbdFilterBB", label = "Abundance Filter",
+              min = 0, max = 1, step = 0.05, value = 0),
+  # hide NA?
+  checkboxInput(inputId = "commHideNABB", label = "Hide unnamed taxa", 
+                value = FALSE)
+)
+
+# update plot:
+actionButton(inputId = "commUpdateBB", label = "Update Composition Plot",
+             icon = icon("fas fa-sync-alt"))
+
+#----- React -----#
+
+CalculateAbundanceBB <- eventReactive(input$commUpdateBB, {
+  
+  withProgress(message = "Calculating Abundance...", value = 1, {
+                 abdDF <- MakeAbundanceDF(physeq = physeqSubsetList[[input$commPSObjBB]],
+                                          taxRank = input$commTaxRankBB,
+                                          abundanceFilter = input$commAbdFilterBB,
+                                          pruneMissing = input$commHideNABB)
+
+                 if (dim(abdDF)[1] == 0) {
+                   stop("No taxa meet this filtering criteria. 
+                        Try lowering the Abundance Filter option.",
+                        call. = FALSE)
+                 } else {
+                   if (input$commTaxRankBB == "Species") {
+                     
+                     abdDF <- mutate(abdDF,
+                                     "GenusSpecies" = paste(Genus, Species, 
+                                                            sep = " "),
+                                     no = "other")
+                   }
+                 }
+                 abdDF
+               })
+}, ignoreNULL = FALSE)
+
+GetFacetString <- eventReactive(input$commUpdateBB, {
+  
+  facetString <- ifelse(input$commPSObjBB == "CRPS_BB",
+                        yes = "~ sample_type",
+                        no = "~ crps_match")
+  
+  return(facetString)
+  
+}, ignoreNULL = FALSE)
+
+renderPlotly({
+  compPlot <- PlotCommunityComposition(abdDF = CalculateAbundanceBB(),
+                                       taxRank = ifelse(isolate(input$commTaxRankBB) == "Species",
+                                                        yes = "GenusSpecies",
+                                                        no = isolate(input$commTaxRankBB)),
+                                       facetFormula = GetFacetString())
+  
+  ggplotly(compPlot, height = 600, width = 1000)
+})
+
+```
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+
+#### **Alpha Diversity**
+
+```{r alpha-div-biobank}
+#----- UI -----#
+
+inputPanel(
+  selectInput(inputId = "alphaDivBB", label = "Comparison:",
+              choices = c("All CRPS vs All BioBank" = "CRPS_BB",
+                          "Chronic CRPS vs Chronic BioBank" = "Chronic_BB",
+                          "Acute CRPS vs Acute BioBank" = "Acute_BB"),
+              selected = "CRPS_BB")
+)
+
+#----- React -----#
+
+GetColVarAlpha <- reactive({
+  colVar <- ifelse(input$alphaDivBB == "CRPS_BB",
+                   yes = "sample_type",
+                   no = "crps_match")
+  return(colVar)
+})
+
+alphaDivPlotsBB <- reactive({
+  pmap(.l = list(yVar = alphaIdxList,
+                 yLab = names(alphaIdxList)),
+       .f = PlotAlphaDiversity,
+       df = alphaDivDFList[[input$alphaDivBB]],
+       xVar = isolate(GetColVarAlpha()))
+})
+
+renderPlot({
+  grid.arrange(alphaDivPlotsBB()[["Richness"]],
+               alphaDivPlotsBB()[["Shannon Diversity"]],
+               alphaDivPlotsBB()[["Faith's PD"]],
+               ncol = 2, nrow = 2)
+}, width = 900, height = 900)
+```
+
+#### **Beta Diversity**
+
+```{r beta-div-BB}
+#----- UI -----#
+
+inputPanel(
+  # select physeq object
+  selectInput(inputId = "betaPhyseqBB", label = "Comparison:",
+              choices = c("All CRPS vs All BioBank" = "CRPS_BB",
+                          "Chronic CRPS vs Chronic BioBank" = "Chronic_BB",
+                          "Acute CRPS vs Acute BioBank" = "Acute_BB"),
+              selected = "CRPS_BB"),
+  # select distance method
+  radioButtons(inputId = "betaDistBB", label = "Distance Method:",
+               choices = c("UniFrac" = "unifrac",
+                           "Weighted UniFrac" = "wunifrac"),
+               selected = "unifrac"),
+  # show sample names
+  checkboxInput(inputId = "betaShowNamesBB", label = "Show point labels",
+                value = FALSE),
+  # show confidence ellipses
+  checkboxInput(inputId = "betaShowEllipsesBB", 
+                label = "Show confidence ellipses", value = TRUE)
+)
+
+#----- React -----#
+
+GetColVarBeta <- reactive({
+  colVar <- ifelse(input$betaPhyseqBB == "CRPS_BB",
+                   yes = "sample_type",
+                   no = "crps_match")
+})
+
+CalculateOrdinationBB <- reactive({
+  withProgress(message = "Calculating ordination (BioBank controls)...", 
+               value = 1, {
+    # Generate ordination object
+    set.seed(28306097)
+    ordinationObj <- ordinate(physeqSubsetList[[input$betaPhyseqBB]], 
+                              method = "PCoA",
+                              distance = input$betaDistBB)
+  })
+})
+
+renderPlot({
+  basePlot <- plot_ordination(physeqSubsetList[[isolate(input$betaPhyseqBB)]],
+                              ordination = CalculateOrdinationBB(),
+                              color = isolate(GetColVarBeta()), 
+                              shape = isolate(GetColVarBeta())) +
+    theme_bw() +
+    theme(legend.title = element_text(size = 18),
+          legend.text = element_text(size = 16),
+          axis.title.x = element_text(size = 14),
+          axis.title.y = element_text(size = 14),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 12)) +
+    geom_point(size = 4)
+  
+  if (input$betaShowNamesBB) {
+    basePlot <- basePlot +
+      geom_text_repel(aes_string(label = "sample"), color = "grey30", size = 4)
+  }
+  
+  if (input$betaShowEllipsesBB == TRUE) {
+    basePlot <- basePlot + stat_ellipse(type = "norm")
+  }
+  
+  basePlot
+  
+}, height = 600, width = 900)
+
+```
+
+**ADONIS Results for selected Comparison and Distance Measure:**
+
+```{r beta-adonis-BB}
+set.seed(28306097)
+renderPrint(
+  RunAdonis(physeqObj = physeqSubsetList[[isolate(input$betaPhyseqBB)]],
+            category = GetColVarBeta(), 
+            distance = input$betaDistBB)
 )
 ```
 
