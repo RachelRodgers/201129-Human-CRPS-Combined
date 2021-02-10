@@ -2,6 +2,7 @@
 
 # For this analysis, we are combining human CRPS data from across five sequencing runs.
 
+library("phyloseq")
 library("tidyverse")
 
 mappingFileList <- c("run1" = "mappingFile_190201.txt",
@@ -46,7 +47,9 @@ for (i in 1:length(mappingFiles)) {
 combinedMap <- Reduce(f = rbind, x = trimmedMapFileList)
 
 # Remove "CRPS Mouse", format the Description column, add other needed columns
+# Correct Baldridge34A which should have Description "Acute", not "Control"
 table(combinedMap$Description)
+#combinedMap[combinedMap$`#SampleID` == "Baldridge34A", "Description"] <- "Acute"
 
 combinedMapFmt <- combinedMap %>% 
   filter(Description != "CRPS mouse") %>% 
@@ -71,7 +74,7 @@ write.table(combinedMapFmt, file = "../data/mappingFile_201129_Human_CRPS_Combin
 
 # Contains all metadata.
 
-# Add run value if it dosen't already exist in the data frame
+# Add run value if it doesn't already exist in the data frame
 modifiedMappingFiles <- vector(mode = "list", length = length(mappingFiles))
 
 for (i in 1:length(mappingFiles)) {
@@ -94,9 +97,8 @@ for (i in 1:length(mappingFiles)) {
 }
 
 # Merge all together
-combinedSampleData <- Reduce(f = function(df1, df2) 
-{merge(x = df1, y = df2, all = TRUE)}, 
-x = modifiedMappingFiles)
+combinedSampleData <- Reduce(f = function(df1, df2) {merge(x = df1, y = df2, all = TRUE)},
+                             x = modifiedMappingFiles)
 
 # Remove unnecessary samples, format the table
 physeqRaw <- readRDS("../data/physeqObjects/ps0.rdp_single.RDS")

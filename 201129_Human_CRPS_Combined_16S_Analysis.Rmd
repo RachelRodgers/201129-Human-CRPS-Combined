@@ -421,6 +421,12 @@ sampleDataBacteria <- merge(allAlphaDiv, sampleDataBacteria,
   column_to_rownames(var = "Row.names")
 ```
 
+```{r save-sampleDataBacteria, eval=FALSE, include=FALSE}
+write.table(sampleDataBacteria, file = "../analysis/sampleDataBacteria.txt",
+            quote = FALSE, sep = "\t", row.names = FALSE)
+```
+
+
 ```{r alpha-diversity}
 #----- UI -----#
 inputPanel(
@@ -572,6 +578,11 @@ ratioPlot <- MakeBoxPlot(df = phylaAbdPivot,
                          label_x = "Group", label_y = "Bacteroides:Firmicutes (rel. abd.)",
                          statMethod = "kruskal.test")
 ratioPlot
+```
+
+```{r save-phylaAbdPivot, eval=FALSE, include=FALSE}
+write.table(phylaAbdPivot, file = "../analysis/phylaAbdPivot.txt",
+            quote = FALSE, sep = "\t", row.names = FALSE)
 ```
 
 
