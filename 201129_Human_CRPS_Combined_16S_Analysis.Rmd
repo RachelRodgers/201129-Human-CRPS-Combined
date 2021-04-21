@@ -112,6 +112,11 @@ physeqTrimmed # 2108 x 64 samples
 
 sampleDataTrimmed <- as(sample_data(physeqTrimmed), "data.frame")
 ```
+```{r averageReads-physeqTrimmed}
+trimmedReadsPerSample <- sample_sums(physeqTrimmed)
+summary(trimmedReadsPerSample)
+```
+
 
 ```{r sampleGroupsList}
 # Creating a list that holds the sample names for each group of comparisons
@@ -215,7 +220,6 @@ groupComparisons <- c("Broad Conditions (3 groups)" = "sample_type",
                       "All Acute Conditions" = "acute",
                       "All Chronic Conditions" = "chronic")
 ```
-
 
 ```{r avgReadsPlot, fig.width=11, fig.height=8.5}
 AvgReadsPlotList <- pmap(.l = list(df = sampleGroupsDFList,
@@ -583,6 +587,10 @@ ratioPlot
 ```{r save-phylaAbdPivot, eval=FALSE, include=FALSE}
 write.table(phylaAbdPivot, file = "../analysis/phylaAbdPivot.txt",
             quote = FALSE, sep = "\t", row.names = FALSE)
+```
+
+```{r save-image, eval=FALSE}
+save.image("201129_Human_CRPS_Combined_16S_Analysis.RData")
 ```
 
 
