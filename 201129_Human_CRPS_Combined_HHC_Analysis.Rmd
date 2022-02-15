@@ -1,0 +1,308 @@
+---
+title: "Human CRPS Combined HHC Analyses"
+author: "Rachel Rodgers"
+date: "1/26/2022"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width=8,
+                      fig.height=6,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+library("phyloseq")
+library("readxl")
+library("microbiome")
+library("vegan")
+library("ggpubr")
+library("ggrepel")
+library("tidyverse")
+
+source("shared_R_scripts/Helper_Functions.R")
+```
+
+```{r function-definitions}
+RunAdonis <- function(physeqObj, category, distance) {
+  bdist <- phyloseq::distance(physeqObj, distance)
+  col <- as(sample_data(physeqObj), "data.frame")[, category]
+  # Adonis test
+  adonis.bdist <- adonis(bdist ~ col)
+  return(adonis.bdist)
+}
+```
+
+## Overview {.tabset}
+
+In this HHC analysis, we want to determine if HHCs with significant daily pain ("Pain") and HHCs without significant daily pain ("No Pain") have different stool bacterial microbiomes.
+
+```{r read-in-data, results='hide'}
+physeqBacteria <- readRDS("../data/physeqObjects/physeqBacteria.RDS")
+physeqBacteria # 1593 x 64
+
+# read-in HHC pain data
+hhcPain <- read_excel("../documents/original_documents/HHC_pain.xlsx") %>% 
+  select(sample, Sample_Status) %>% 
+  dplyr::rename(HHC_Sample_Status = Sample_Status)
+
+hhcSubgroupSamples <- hhcPain$sample
+
+# add this information to the physeqBacteria sample data
+sampleData <- as(sample_data(physeqBacteria), "data.frame")
+
+# Edit the sample data to identify households with HHC that report pain ("bad" households)
+sampleDataModified <- merge(hhcPain, sampleData, by = "sample", all = TRUE) 
+
+badHouseholds <- sampleDataModified %>% 
+  filter(sample %in% hhcSubgroupSamples,
+         HHC_Sample_Status == "Pain") %>% 
+  pull(household)
+
+# add "bad_household" boolean column, and for non-biobank controls, a designation
+#   for HHC good/bad household and CRPS good/bad household
+sampleDataModified <- sampleDataModified %>% 
+  mutate("bad_household" = ifelse(household %in% badHouseholds,
+                                  yes = TRUE, no = FALSE),
+         "status_household_description" = case_when(sample_status == "healthy" &
+                                                      !bad_household ~ "HHC_good_household",
+                                                    sample_status == "healthy" &
+                                                      bad_household ~ "HHC_bad_household",
+                                                    sample_status == "CRPS" &
+                                                      !bad_household ~ "CRPS_good_household",
+                                                    sample_status == "CRPS" &
+                                                      bad_household ~ "CRPS_bad_household")) %>% 
+  select("bad_household", "status_household_description", everything())
+
+row.names(sampleDataModified) <- sampleDataModified$sample
+sample_data(physeqBacteria) <- sample_data(sampleDataModified)
+
+#----- HHC Samples Only -----#
+physeqHHC <- physeqBacteria %>% 
+  subset_samples(sample %in% hhcSubgroupSamples) %>% 
+  RemoveMissingTaxa()
+physeqHHC # 961 x 22; group by HHC_Sample_Status
+
+#----- "Good Households" -----#
+# subset the physeq object to keep both HHC and CRPS samples for "good" and "bad"
+#   households only (no biobank controls)
+physeqGood <- physeqBacteria %>% 
+  subset_samples(sample_type != "BioBank_Control" & !bad_household) %>% 
+  RemoveMissingTaxa()
+physeqGood # 1130 x 25
+
+#----- "Bad Households" -----#
+physeqBad <- physeqBacteria %>% 
+  subset_samples(sample_type != "BioBank_Control" & bad_household) %>% 
+  RemoveMissingTaxa()
+physeqBad # 729 x 20
+
+#----- No BioBank Controls -----#
+physeqNoBB <- physeqBacteria %>% 
+  subset_samples(sample_type != "BioBank_Control") %>% 
+  RemoveMissingTaxa()
+physeqNoBB # 1393 x 45
+
+physeqSubsetList <- list("HHC" = physeqHHC, "Good_Households" = physeqGood,
+                         "Bad_Households" = physeqBad,
+                         "No_BB" = physeqNoBB)
+
+# variables to split each group in physeqSubsetList into:
+groupVars <- c("HHC" = "HHC_Sample_Status",
+               "Good_Households" = "sample_status",
+               "Bad_Households" = "sample_status",
+               "No_BB" = "status_household_description")
+```
+
+### Phylum-level Community Composition
+
+```{r phylum-community-composition}
+phylumAbdDFList <- map(.x = physeqSubsetList,
+                       .f = ~ MakeAbundanceDF(physeq = .x,
+                                              taxRank = "Phylum",
+                                              abundanceFilter = 0))
+
+phylumCommunityPlots <- pmap(.l = list(abdDF = phylumAbdDFList,
+                                       facetFormula = list("HHC" = "~ HHC_Sample_Status",
+                                                           "Good_Households" = "~ sample_status",
+                                                           "Bad_Households" = "~ sample_status",
+                                                           "No_BB" = "~ status_household_description")),
+                             .f = PlotCommunityComposition,
+                             facetRow = 2, facetCol = 2)
+
+communityPlotsAnno <- map2(.x = phylumCommunityPlots, 
+                           .y = names(phylumCommunityPlots),
+                           .f = ~ annotate_figure(p = .x, top = .y))
+
+communityPlotsAnno
+```
+
+### Bacteroides:Firmicutes Ratio
+
+```{r bf-ratio}
+selectPhylaAbdDFList <- map(.x = phylumAbdDFList,
+                            .f = ~ .x %>% 
+                              filter(Phylum %in% c("Bacteroidetes",
+                                                   "Firmicutes")) %>% 
+                              select(Phylum, Abundance, sample, 
+                                     HHC_Sample_Status, sample_status,
+                                     status_household_description))
+  
+phylaAbdPivotList <- map(.x = selectPhylaAbdDFList,
+                         .f = ~ .x %>% 
+                           pivot_wider(names_from = Phylum,
+                                       values_from = Abundance) %>% 
+                           mutate(ratio = Bacteroidetes/Firmicutes))
+
+ratioPlotList <- pmap(.l = list(df = phylaAbdPivotList,
+                                xVar = groupVars,
+                                statMethod = c(rep("wilcox.test", 3),
+                                               "kruskal.test")),
+                      .f = MakeBoxPlot,
+                      yVar = "ratio",
+                      label_y = "Bacteroidtes:Firmicutes (rel. abd.)")
+
+ratioPlotListAnno <- map2(.x = ratioPlotList,
+                          .y = names(ratioPlotList),
+                          .f = ~ annotate_figure(p = .x, top = .y))
+
+ratioPlotListAnno
+```
+
+```{r save-b-f-ratio-for-lara, eval=FALSE}
+fileList <- paste0("../analysis/", names(phylaAbdPivotList),
+                   "_bacteroidetes_firmicutes_ratio.txt")
+names(fileList) <- names(phylaAbdPivotList)
+walk2(.x = phylaAbdPivotList, .y = fileList,
+      .f = write.table,
+      quote = FALSE, sep = "\t", row.names = FALSE)
+```
+
+### Alpha Diversity
+
+```{r calculate-alpha-idx, results='hide'}
+CalculateAlphaDiversity <- function(physeqObj) {
+  sampleData <- as(sample_data(physeqObj), "data.frame")
+  alphaDiv <- microbiome::alpha(physeqObj, index = c("observed",
+                                                     "diversity_shannon"))
+  sampleDataWithAlpha <- merge(alphaDiv, sampleData, by = "row.names", all = TRUE)
+}
+
+alphaDivList <- map(.x = physeqSubsetList, .f = ~ CalculateAlphaDiversity(.))
+
+richnessPlots <- pmap(.l = list(df = alphaDivList,
+                                xVar = groupVars,
+                                alphaPlotTitle = paste(names(alphaDivList), 
+                                                       "Richness"),
+                                statMethod = c(rep("wilcox.test", 3),
+                                               "kruskal.test")),
+                      .f = PlotAlphaDiversity,
+                      yVar = "observed",
+                      yLabel = "Richness")
+
+diversityPlots <- pmap(.l = list(df = alphaDivList,
+                                xVar = groupVars,
+                                alphaPlotTitle = paste(names(alphaDivList), 
+                                                       "Shannon Diversity"),
+                                statMethod = c(rep("wilcox.test", 3),
+                                               "kruskal.test")),
+                      .f = PlotAlphaDiversity,
+                      yVar = "diversity_shannon",
+                      yLabel = "Diversity")
+
+alphaPlotsArr <- map2(.x = richnessPlots, .y = diversityPlots,
+                      .f = ~ ggarrange(.x, .y, ncol = 2, nrow = 1))
+
+alphaPlotsArr
+```
+
+```{r save-alphaDivList$No_BB-for-Lara, eval=FALSE, include=FALSE}
+write.table(x = alphaDivList$No_BB,
+            file = "../analysis/alpha_diversity_values.txt",
+            quote = FALSE, sep = "\t", row.names = FALSE)
+```
+
+### Beta Diversity
+
+```{r beta-diversity, warning=FALSE}
+#----- calculate unweighted & weighted ordinations -----#
+set.seed(4217589)
+unweightedOrdList <- map(.x = physeqSubsetList,
+                         .f = ordinate,
+                         method = "PCoA", distance = "unifrac")
+set.seed(4217589)
+weightedOrdList <- map(.x = physeqSubsetList,
+                       .f = ordinate,
+                       method = "PCoA", distance = "wunifrac")
+
+#----- Run ADONIS & Extract P-Value -----#
+set.seed(4217589)
+unweightedADONISList <- map2(.x = physeqSubsetList,
+                             .y = groupVars,
+                             .f = RunAdonis,
+                             distance = "unifrac")
+unweightedPVals <- map(.x = unweightedADONISList,
+                       .f = ~ .x$aov.tab$`Pr(>F)`[1])
+
+set.seed(4217589)
+weightedADONISList <- map2(.x = physeqSubsetList,
+                           .y = groupVars,
+                           .f = RunAdonis,
+                           distance = "wunifrac")
+weightedPVals <- map(.x = weightedADONISList,
+                     .f = ~ .x$aov.tab$`Pr(>F)`[1])
+
+#----- Generate Ordination Plots -----#
+unweightedOrdPlots <- pmap(.l = list(ordObj = unweightedOrdList,
+                                     physeqObj = physeqSubsetList,
+                                     mySubtitle = paste("ADONIS p:",
+                                                        unweightedPVals),
+                                     colorVar = groupVars),
+                           .f = MakeOrdinationPlot,
+                           colorValues = cbPaletteGrey,
+                           myTitle = "Unweighted UniFrac")
+
+weightedOrdPlots <- pmap(.l = list(ordObj = weightedOrdList,
+                                   physeqObj = physeqSubsetList,
+                                   mySubtitle = paste("ADONIS p:", 
+                                                      weightedPVals),
+                                   colorVar = groupVars),
+                         .f = MakeOrdinationPlot,
+                         colorValues = cbPaletteGrey,
+                         myTitle = "Weighted UniFrac")
+
+#----- Format Ordination Plots -----#
+groups <- names(physeqSubsetList)
+
+finalOrdPlots <- vector(mode = "list", length = length(groups))
+
+for (i in 1:length(groups)) {
+  currentGroup <- groups[i]
+  # add ellipses to weighted & unweighted UniFrac plots
+  plotList <- list("unweighted" = unweightedOrdPlots,
+                   "weighted" = weightedOrdPlots)
+  
+  plotsWithEllipses <- map(.x = plotList,
+                           .f = ~ .x[[currentGroup]] + 
+                             stat_ellipse(type = "norm"))
+  
+  # arrange/annotate plots
+  plotsArr <- ggarrange(plotsWithEllipses$unweighted,
+                        plotsWithEllipses$weighted,
+                        common.legend = TRUE,
+                        nrow = 1, ncol = 2, legend = "bottom")
+  plotsFinal <- annotate_figure(p = plotsArr,
+                                top = currentGroup)
+  
+  # add to list
+  finalOrdPlots[[i]] <- plotsFinal
+  names(finalOrdPlots)[i] <- currentGroup
+}
+```
+
+```{r ordPlotList}
+finalOrdPlots
+```
