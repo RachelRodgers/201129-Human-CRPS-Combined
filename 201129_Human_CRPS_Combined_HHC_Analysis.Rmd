@@ -79,7 +79,9 @@ sampleDataModified <- sampleDataModified %>%
 
 row.names(sampleDataModified) <- sampleDataModified$sample
 sample_data(physeqBacteria) <- sample_data(sampleDataModified)
+```
 
+```{r physeqSubsetList, results='hide'}
 #----- HHC Samples Only -----#
 physeqHHC <- physeqBacteria %>% 
   subset_samples(sample %in% hhcSubgroupSamples) %>% 
@@ -106,14 +108,23 @@ physeqNoBB <- physeqBacteria %>%
   RemoveMissingTaxa()
 physeqNoBB # 1393 x 45
 
-physeqSubsetList <- list("HHC" = physeqHHC, "Good_Households" = physeqGood,
+#----- BB vs HHC -----#
+physeqControls <- physeqBacteria %>% 
+  subset_samples(sample_type %in% c("BioBank_Control", "HHC")) %>% 
+  RemoveMissingTaxa()
+physeqControls # 1235 x 41
+
+physeqSubsetList <- list("HHC" = physeqHHC, 
+                         "Good_Households" = physeqGood,
                          "Bad_Households" = physeqBad,
+                         "Controls" = physeqControls,
                          "No_BB" = physeqNoBB)
 
 # variables to split each group in physeqSubsetList into:
 groupVars <- c("HHC" = "HHC_Sample_Status",
                "Good_Households" = "sample_status",
                "Bad_Households" = "sample_status",
+               "Controls" = "sample_type",
                "No_BB" = "status_household_description")
 ```
 
@@ -129,6 +140,7 @@ phylumCommunityPlots <- pmap(.l = list(abdDF = phylumAbdDFList,
                                        facetFormula = list("HHC" = "~ HHC_Sample_Status",
                                                            "Good_Households" = "~ sample_status",
                                                            "Bad_Households" = "~ sample_status",
+                                                           "Controls" = "~ sample_type",
                                                            "No_BB" = "~ status_household_description")),
                              .f = PlotCommunityComposition,
                              facetRow = 2, facetCol = 2)
@@ -149,7 +161,8 @@ selectPhylaAbdDFList <- map(.x = phylumAbdDFList,
                                                    "Firmicutes")) %>% 
                               select(Phylum, Abundance, sample, 
                                      HHC_Sample_Status, sample_status,
-                                     status_household_description))
+                                     status_household_description,
+                                     sample_type))
   
 phylaAbdPivotList <- map(.x = selectPhylaAbdDFList,
                          .f = ~ .x %>% 
@@ -159,7 +172,7 @@ phylaAbdPivotList <- map(.x = selectPhylaAbdDFList,
 
 ratioPlotList <- pmap(.l = list(df = phylaAbdPivotList,
                                 xVar = groupVars,
-                                statMethod = c(rep("wilcox.test", 3),
+                                statMethod = c(rep("wilcox.test", 4),
                                                "kruskal.test")),
                       .f = MakeBoxPlot,
                       yVar = "ratio",
@@ -197,7 +210,7 @@ richnessPlots <- pmap(.l = list(df = alphaDivList,
                                 xVar = groupVars,
                                 alphaPlotTitle = paste(names(alphaDivList), 
                                                        "Richness"),
-                                statMethod = c(rep("wilcox.test", 3),
+                                statMethod = c(rep("wilcox.test", 4),
                                                "kruskal.test")),
                       .f = PlotAlphaDiversity,
                       yVar = "observed",
@@ -207,7 +220,7 @@ diversityPlots <- pmap(.l = list(df = alphaDivList,
                                 xVar = groupVars,
                                 alphaPlotTitle = paste(names(alphaDivList), 
                                                        "Shannon Diversity"),
-                                statMethod = c(rep("wilcox.test", 3),
+                                statMethod = c(rep("wilcox.test", 4),
                                                "kruskal.test")),
                       .f = PlotAlphaDiversity,
                       yVar = "diversity_shannon",
@@ -219,9 +232,13 @@ alphaPlotsArr <- map2(.x = richnessPlots, .y = diversityPlots,
 alphaPlotsArr
 ```
 
-```{r save-alphaDivList$No_BB-for-Lara, eval=FALSE, include=FALSE}
+```{r save-alphaDivList, eval=FALSE, include=FALSE}
 write.table(x = alphaDivList$No_BB,
             file = "../analysis/alpha_diversity_values.txt",
+            quote = FALSE, sep = "\t", row.names = FALSE)
+
+write.table(x = alphaDivList$Controls,
+            file = "../analysis/alpha_diversity_values_controls.txt",
             quote = FALSE, sep = "\t", row.names = FALSE)
 ```
 

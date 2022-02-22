@@ -305,7 +305,7 @@ phylaPrevalencePlot
 
 From the prevalence plots, we can see that several low-abundance/low-prevalence taxa are present in the datset, including the Fusocbacteria, Lentisphaerae, and Syngeristetes.  Downstream analysis (such as biomarker analysis) may benefit from removal of these taxa.
 
-```{r, save-physeqBacteria-for-lefse-input, eval=FALSE, include=FALSE}
+```{r, save-physeqBacteria-for-addl-analyses, eval=FALSE, include=FALSE}
 # Save the physeqBacteria oject to generate LEfSe input data
 saveRDS(physeqBacteria, "../data/physeqObjects/physeqBacteria.RDS")
 ```
@@ -429,7 +429,6 @@ sampleDataBacteria <- merge(allAlphaDiv, sampleDataBacteria,
 write.table(sampleDataBacteria, file = "../analysis/sampleDataBacteria.txt",
             quote = FALSE, sep = "\t", row.names = FALSE)
 ```
-
 
 ```{r alpha-diversity}
 #----- UI -----#
@@ -592,7 +591,6 @@ write.table(phylaAbdPivot, file = "../analysis/phylaAbdPivot.txt",
 ```{r save-image, eval=FALSE}
 save.image("201129_Human_CRPS_Combined_16S_Analysis.RData")
 ```
-
 
 ### Session Info
 

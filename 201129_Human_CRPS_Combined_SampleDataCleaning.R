@@ -4,12 +4,14 @@
 
 library("tidyverse")
 
+# Lara added additional metadata in the sampleDataLC.txt file
 sampleData <- read.delim("../data/sampleDataLC.txt", stringsAsFactors = FALSE,
                          check.names = FALSE)
 
-# remove columns:
+# remove unneeded columns:
 sampleDataModified <- sampleData %>% 
-  select(-c("BarcodeSequence", "LinkerPrimerSequence", "HTCF_path",
+  select(-c("BarcodeSequence", 
+            "LinkerPrimerSequence", "HTCF_path",
             "index_1", "index_2", "bc_1", "bc_2", contains("16S.Barcode")))
 
 # change case of column names and replace "." with "_":
