@@ -24,6 +24,7 @@ library("ggrepel")
 library("tidyverse")
 
 source("shared_R_scripts/Helper_Functions.R")
+source("shared_R_scripts/BoxPlotHelpers.R")
 ```
 
 ```{r function-definitions}
@@ -86,6 +87,41 @@ sampleDataModified <- sampleDataModified %>%
 sample_data(physeqBacteria) <- sample_data(sampleDataModified)
 ```
 
+```{r save-physeqBacteria-with-modified-sample-data, eval=FALSE, include=FALSE}
+saveRDS(physeqBacteria, "../data/physeqObjects/physeqBacteriaModifiedMetadata.RDS")
+```
+
+```{r write-out-lefse-input-data, eval=FALSE, include=FALSE}
+# as per Lara's request Nov 29, 2022
+source("./shared_R_scripts/GenerateLefseData.R")
+
+# CRPS bad households vs CRPS good households
+crpsSamples <- sampleDataModified %>% 
+  filter(sample_type == "CRPS") %>% 
+  pull(sample)
+physeqCRPS <- prune_samples(samples = crpsSamples, x = physeqBacteria) %>% 
+  RemoveMissingTaxa() # 968 x 22
+
+crpsLefseIn <- GenerateLefseData(physeqObject = physeqCRPS,
+                                 categoryColumnName = "status_household_description",
+                                 sampleColumnName = "sample")
+write.table(x = crpsLefseIn, file = "../data/LEfSe_input/crps_goodHH_badHH.txt",
+            quote = FALSE, sep = "\t", row.names = TRUE, col.names = FALSE)
+
+# HHC bad households vs HHC good households
+hhcSamples <- sampleDataModified %>% 
+  filter(sample_type == "HHC") %>% 
+  pull(sample)
+physeqHHC <- prune_samples(samples = hhcSamples, x = physeqBacteria) %>% 
+  RemoveMissingTaxa() # 961 x 22
+
+hhcLefseIn <- GenerateLefseData(physeqObject = physeqHHC,
+                                categoryColumnName = "status_household_description",
+                                sampleColumnName = "sample")
+write.table(x = hhcLefseIn, file = "../data/LEfSe_input/hhc_goodHH_badHH.txt",
+            quote = FALSE, sep = "\t", row.names = TRUE, col.names = FALSE)
+```
+
 ```{r physeqSubsetList, results='hide'}
 #----- HHC Samples Only -----#
 physeqHHC <- physeqBacteria %>% 
@@ -125,12 +161,19 @@ physeqCRPSBB <- physeqBacteria %>%
   RemoveMissingTaxa()
 physeqCRPSBB # 1236 x 41
 
+#----- CRPS Bad HH vs CRPS Good HH -----#
+physeqCRPS <- physeqBacteria %>% 
+  subset_samples(sample_type == "CRPS") %>% 
+  RemoveMissingTaxa()
+physeqCRPS # 968 x 22
+
 physeqSubsetList <- list("HHC" = physeqHHC, 
                          "Good_Households" = physeqGood,
                          "Bad_Households" = physeqBad,
                          "Controls" = physeqControls,
                          "No_BB" = physeqNoBB,
-                         "BB_vs_CRPS" = physeqCRPSBB)
+                         "BB_vs_CRPS" = physeqCRPSBB,
+                         "CRPS" = physeqCRPS)
 
 # variables to split each group in physeqSubsetList into:
 groupVars <- c("HHC" = "HHC_Sample_Status",
@@ -138,7 +181,8 @@ groupVars <- c("HHC" = "HHC_Sample_Status",
                "Bad_Households" = "sample_status",
                "Controls" = "sample_type",
                "No_BB" = "status_household_description",
-               "BB_vs_CRPS" = "sample_type")
+               "BB_vs_CRPS" = "sample_type",
+               "CRPS" = "status_household_description")
 ```
 
 ### Phylum-level Community Composition
@@ -183,9 +227,9 @@ phylaAbdPivotList <- map(.x = selectPhylaAbdDFList,
 
 ratioPlotList <- pmap(.l = list(df = phylaAbdPivotList,
                                 xVar = groupVars,
-                                statMethod = c(rep("wilcox.test", 4),
-                                               "kruskal.test",
-                                               "wilcox.test")),
+                                statMethod = c(rep("wilcox.test", 4), 
+                                               "kruskal.test", 
+                                               rep("wilcox.test", 2))),
                       .f = MakeBoxPlot,
                       yVar = "ratio",
                       label_y = "Bacteroidtes:Firmicutes (rel. abd.)")
@@ -224,7 +268,7 @@ richnessPlots <- pmap(.l = list(df = alphaDivList,
                                                        "Richness"),
                                 statMethod = c(rep("wilcox.test", 4),
                                                "kruskal.test",
-                                               "wilcox.test")),
+                                               rep("wilcox.test", 2))),
                       .f = PlotAlphaDiversity,
                       yVar = "observed",
                       yLabel = "Richness")
@@ -235,7 +279,7 @@ diversityPlots <- pmap(.l = list(df = alphaDivList,
                                                        "Shannon Diversity"),
                                 statMethod = c(rep("wilcox.test", 4),
                                                "kruskal.test",
-                                               "wilcox.test")),
+                                               rep("wilcox.test", 2))),
                       .f = PlotAlphaDiversity,
                       yVar = "diversity_shannon",
                       yLabel = "Diversity")

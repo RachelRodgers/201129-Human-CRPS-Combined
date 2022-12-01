@@ -112,11 +112,11 @@ physeqTrimmed # 2108 x 64 samples
 
 sampleDataTrimmed <- as(sample_data(physeqTrimmed), "data.frame")
 ```
+
 ```{r averageReads-physeqTrimmed}
 trimmedReadsPerSample <- sample_sums(physeqTrimmed)
 summary(trimmedReadsPerSample)
 ```
-
 
 ```{r sampleGroupsList}
 # Creating a list that holds the sample names for each group of comparisons
