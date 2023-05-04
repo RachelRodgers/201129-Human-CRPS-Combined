@@ -1,7 +1,7 @@
 ---
 title: "Human CRPS Combined HHC Analyses"
 author: "Rachel Rodgers"
-date: "1/26/2022"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output: 
   html_document:
     code_folding: hide
@@ -21,10 +21,14 @@ library("microbiome")
 library("vegan")
 library("ggpubr")
 library("ggrepel")
+library("DESeq2")
+library("data.table")
+library("scales")
 library("tidyverse")
 
 source("shared_R_scripts/Helper_Functions.R")
 source("shared_R_scripts/BoxPlotHelpers.R")
+source("shared_R_scripts/BiomarkerHelpers.R")
 ```
 
 ```{r function-definitions}
@@ -42,6 +46,8 @@ RunAdonis <- function(physeqObj, category, distance) {
 In this HHC analysis, we want to determine if HHCs with significant daily pain ("Pain") and HHCs without significant daily pain ("No Pain") have different stool bacterial microbiomes.
 
 ```{r read-in-data, results='hide'}
+# physeqBacteria comes from rarefied data, see script 
+#   201129_Human_CRPS_Combined_16S_Analysis.Rmd
 physeqBacteria <- readRDS("../data/physeqObjects/physeqBacteria.RDS")
 physeqBacteria # 1593 x 64
 
@@ -185,9 +191,77 @@ groupVars <- c("HHC" = "HHC_Sample_Status",
                "CRPS" = "status_household_description")
 ```
 
-### Phylum-level Community Composition
+### Species-level Community Composition
 
-```{r phylum-community-composition}
+```{r community-composition}
+# Calculate community composition for all samples at the species level
+speciesAbdDF <- MakeAbundanceDF(physeq = physeqBacteria,
+                                taxRank = "Species",
+                                abundanceFilter = 0)
+
+# Edit species column to be genus species
+speciesAbdDFModified <- speciesAbdDF %>% 
+  mutate(species = ifelse(is.na(Species), 
+                          yes = paste(Genus, "spp."),
+                          no = paste(Genus, Species)),
+         species = ifelse(species == "NA spp.",
+                          yes = "unclassified",
+                          no = species)) %>% 
+  select(species, Abundance, everything())
+
+# Filter out things with an abundance < 10%
+speciesAbdFiltered <- speciesAbdDFModified %>% 
+  filter(Abundance > 0.15)
+
+# Standardize colors between plots
+uniqueSpecies <- unique(speciesAbdFiltered$species)
+speciesColors <- hue_pal()(length(uniqueSpecies))
+names(speciesColors) <- uniqueSpecies
+
+# Community plot by sample_type
+communityBySampleType <- PlotCommunityComposition(abdDF = speciesAbdFiltered,
+                                                  taxRank = "species",
+                                                  facetFormula = "~ sample_type",
+                                                  facetCol = 2, facetRow = 2)
+communityBySampleType <- communityBySampleType +
+  scale_fill_manual(values = speciesColors) +
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank())
+communityBySampleType
+
+# Community plot by status_household_description
+communityByHH <- PlotCommunityComposition(abdDF = speciesAbdFiltered,
+                                          taxRank = "species",
+                                          facetFormula = "~ status_household_description",
+                                          facetCol = 2, facetRow = 2)
+communityByHH <- communityByHH + 
+  scale_fill_manual(values = speciesColors) +
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank())
+communityByHH
+```
+
+```{r save-community-plots, eval=FALSE}
+figPath <- "../analysis/figures"
+dir.create(file.path(figPath, "community_composition"))
+
+communityPlots <- list("communityPlotBySampleType" = communityBySampleType,
+                       "communityPlotByHH" = communityByHH)
+
+figPaths <- map(.x = names(communityPlots),
+                .f = ~ paste0(file.path(figPath, "community_composition"),
+                              "/", .x, "_filt15Perc.jpg"))
+
+names(figPaths) <- names(communityPlots)
+
+walk2(.x = figPaths, .y = communityPlots,
+      .f = ~ ggsave(filename = .x, plot = .y, width = 11, height = 8.5,
+                    units = "in"))
+```
+
+```{r phylum-community-composition, eval=FALSE}
 phylumAbdDFList <- map(.x = physeqSubsetList,
                        .f = ~ MakeAbundanceDF(physeq = .x,
                                               taxRank = "Phylum",
@@ -381,3 +455,105 @@ for (i in 1:length(groups)) {
 ```{r ordPlotList}
 finalOrdPlots
 ```
+
+### Biomarker Analysis with DESeq2
+
+Checking for biomarkers that distinguish between these pairs of groups:
+
+  * BioBank vs CRPS
+  * HHC vs CRPS 
+  * Acute CRPS vs Chronic CRPS
+  * Good CRPS vs Bad CRPS
+  
+```{r subset-physeq-for-deseq-analysis}
+# BioBank versus CRPS already generated (physeqSubsetList$BB_vs_CRPS)
+
+#----- HHC vs CRPS -----#
+physeqHHCvsCRPS <- physeqBacteria %>% 
+  subset_samples(sample_type %in% c("CRPS", "HHC")) %>% 
+  RemoveMissingTaxa() # 1383 x 44
+
+#----- Acute CRPS vs Chronic CRPS -----#
+physeqCRPSType <- physeqBacteria %>% 
+  subset_samples(description %in% c("Acute", "Chronic")) %>% 
+  RemoveMissingTaxa() # 968 x 22
+
+#----- CRPS Good HH vs CRPS Bad HH -----#
+physeqCRPSHH <- physeqBacteria %>% 
+  subset_samples(status_household_description %in% 
+                   c("CRPS_bad_household", "CRPS_good_household")) %>% 
+  RemoveMissingTaxa() # 968 x 22
+  
+#----- store these new physeq objects in list for easier processing -----#
+deseqPhyseqList <- list("BB vs CRPS" = physeqSubsetList$BB_vs_CRPS,
+                        "HHC vs CRPS" = physeqHHCvsCRPS,
+                        "Acute vs Chronic CRPS" = physeqCRPSType,
+                        "CRPS Bad HH vs CRPS Good HH" = physeqCRPSHH)
+```
+  
+```{r run-deseq-analyses}
+physeqNames <- names(deseqPhyseqList)
+
+variableList <- list("sample_type", 
+                     "sample_type", 
+                     "description", 
+                     "status_household_description")
+names(variableList) <- physeqNames
+
+numeratorList <- list("BioBank_Control",
+                      "HHC",
+                      "Acute",
+                      "CRPS_bad_household")
+names(numeratorList) <- physeqNames
+
+denominatorList <- list("CRPS",
+                        "CRPS",
+                        "Chronic",
+                        "CRPS_good_household")
+names(denominatorList) <- physeqNames
+
+#----- Modify GenerateDESeqResults fxn for work-around -----#
+
+GenerateDESeqResultsModified <- function(physeq, variable, numerator, denominator) {
+  
+  # Returns DESeq Results as Formal Class "DESeqResults"
+  # Create formula from string variable
+  formula <- as.formula(paste("~", variable, sep = " "))
+  # Convert to deseq data set object
+  ds <- phyloseq_to_deseq2(physeq, design = formula)
+  # work-around
+  counts <- counts(ds)
+  geoMeans <- apply(counts, 1,
+                      function(row) {if (all(row == 0)) 0 else exp(mean(log(row[row != 0])))})
+  dds <- estimateSizeFactors(ds, geoMeans = geoMeans)
+  # Run analysis
+  ddsAnalysis <- DESeq(dds, test = "Wald", fitType = "local", betaPrior = FALSE)
+  # Extract and format results
+  ddsResults <- results(ddsAnalysis,
+                        contrast = c(variable, numerator, denominator)) 
+}
+
+#----- Run DESeq2 -----#
+deseqResults <- pmap(.l = list(physeq = deseqPhyseqList,
+                               variable = variableList,
+                               numerator = numeratorList,
+                               denominator = denominatorList),
+                     .f = GenerateDESeqResultsModified)
+
+deseqResultTables <- map2(.x = deseqPhyseqList,
+                          .y = deseqResults,
+                          .f = ~ GenerateDESeqResultsTable(physeq = .x,
+                                                           ddsResults = .y),
+                          sigThreshold = 0.05)
+```
+
+```{r generate-deseq-volcano-plots}
+volcanoPlots <- pmap(.l = list(physeq = deseqPhyseqList,
+                               resultsDataTable = deseqResultTables,
+                               plotTitle = names(deseqPhyseqList)),
+                     .f = PlotStaticVolcano,
+                     sigThreshold = 0.05)
+
+volcanoPlots
+```
+
