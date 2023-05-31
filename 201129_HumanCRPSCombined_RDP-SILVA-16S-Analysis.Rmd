@@ -1,0 +1,576 @@
+---
+title: "Human CRPS Combined Cohorts 16S Analysis of RDP and SILVA Annotated Data"
+author: "Rachel Rodgers"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    code_folding: hide
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width=8,
+                      fig.height=6,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+```{r load-libraries, message=FALSE, include=FALSE}
+library("shiny")
+library("phyloseq")
+library("vegan")
+library("gridExtra")
+library("knitr")
+library("plotly")
+library("microbiome")
+library("data.table")
+library("ggrepel")
+library("ggpubr")
+library("scales")
+library("plyr")
+library("DT")
+library("picante")
+library("gridExtra")
+library("tidyverse")
+
+source("./shared_R_scripts/Helper_Functions.R")
+source("./shared_R_scripts/BoxPlotHelpers.R")
+
+options(shiny.sanitize.errors = FALSE)
+```
+
+## Overview {.tabset}
+
+This is a 16S analysis of human CRPS data from across five sequencing runs:
+
+  1. 190201_Baldridge_CGMA
+  2. 190318_Baldridge_CGMA
+  3. 190523_Baldridge_CGMA_V4
+  4. 200127_Baldridge_CGMA_16S
+  5. 201019_LaraC_V4_Mouse_Human_CRPS
+  
+The taxa have been annotated with both RDP (v16) and SILVA (v138.1) training sets.
+The analyses of both data sets will be compared.
+
+The following comparisons are analyzed:
+  
+  1. CRPS vs BioBank Controls
+  2. CRPS vs Household Controls
+  3. "Bad" households vs "Good" households
+  4. Acute CRPS vs Chronic CRPS
+
+<br>
+<br>
+
+### **QC**
+
+#### **Taxa Filtering**
+
+<br>
+
+Non-bacterial taxa need to be removed from the data set prior to further analysis.
+The RDP data set contains taxa from the Phylum Cyanobacteria/Chloroplast, while 
+the SILVA data contains taxa from the Kingdom Archaea and the Phylum Cyanobacteria.
+Those taxa will be removed here.
+
+```{r filter-non-bacterial, results='hide'}
+# RDP
+physeqMergedRDP <- readRDS("../data/RDP/RDataObjects/physeqObjects/physeqMergedRDP.RDS")
+physeqMergedRDP # 2115 x 67
+
+physeqBacteriaRDP <- physeqMergedRDP %>% 
+  subset_taxa(Kingdom == "Bacteria" & Phylum != "Cyanobacteria/Chloroplast")
+physeqBacteriaRDP # 2061 x 67
+
+# SILVA
+physeqMergedSILVA <- readRDS("../data/SILVA/RDataObjects/physeqObjects/physeqMergedSILVA.RDS")
+physeqMergedSILVA # 2668 x 67
+
+physeqBacteriaSILVA <- physeqMergedSILVA %>% 
+  subset_taxa(Kingdom == "Bacteria" & Phylum != "Cyanobacteria")
+physeqBacteriaSILVA # 2640 x 67
+```
+
+Removal of non-bacterial taxa from the RDP data set reduces the total number of 
+taxa from 2,115 to 2,061. In the SILVA data, total taxa are reduced from 2,668
+to 2,640.
+
+```{r physeqList}
+# store the different physeq objects in a list
+physeqList <- list("rdp" = physeqBacteriaRDP,
+                   "silva" = physeqBacteriaSILVA)
+
+sampleDataList <- map(.x = physeqList,
+                      .f = ~ as(sample_data(.), "data.frame"))
+
+varsOfInterest <- c("Sample Type" = "Sample_Type",
+                    "Household Type" = "bad_household",
+                    "CRPS Type" = "Description")
+```
+
+<br>
+
+---
+
+#### **Read Count Distribution**
+
+<br>
+
+```{r reads-per-sample-summary}
+numReadsSummary <- list("rdp" = summary(sampleDataList$rdp$readsPerSampleRDP),
+                        "silva" = summary(sampleDataList$silva$readsPerSampleSILVA))
+numReadsSummary
+```
+
+<br>
+
+---
+
+**By Library**
+
+<br>
+
+```{r read-counts-by-library}
+sampleDataList <- map(.x = sampleDataList,
+                      .f = ~ .x %>% 
+                        mutate(across("run", as.character)))
+
+readsByLib <- pmap(.l = list(df = sampleDataList,
+                             yVar = c("rdp" = "readsPerSampleRDP",
+                                      "silva" = "readsPerSampleSILVA"),
+                             plotTitle = paste("Avg. Reads by Sequencing Run\n",
+                                               toupper(names(sampleDataList)), 
+                                               "Data")),
+                   .f = PrettyBox,
+                   xVar = "run",
+                   statMethod = "kruskal.test",
+                   colorVals = cbPaletteGrey,
+                   label_x = "Sequencing Run",
+                   label_y = "Reads Per Sample")
+
+# Add horizontal line at 1k reads and label the low read samples on the plot
+lowReadData <- map2(.x = sampleDataList,
+                    .y = c("rdp" = "readsPerSampleRDP",
+                           "silva" = "readsPerSampleSILVA"),
+                    .f = ~ .x %>% 
+                      filter(!!sym(.y) <= 1000))
+
+
+readsByLibModified <- map2(.x = readsByLib,
+                           .y = lowReadData,
+                           .f = ~ .x +
+                             geom_hline(yintercept = 1000, lty = "dashed") +
+                             geom_text_repel(aes_string(label = "sample"),
+                                             data = .y))
+
+readsByLibModified
+
+lowReadSamples <- map(.x = lowReadData, .f = ~ .x$sample)
+```
+
+There is a significant difference between the average reads per sample by library. 
+The data will be rarefied to compensate for this.
+
+In addition there are four BioBank Control samples with low (< 1000) reads 
+which will be removed from the analysis:
+
+  * Baldridge_D
+  * Baldridge_R
+  * Baldridge_U
+  * Baldridge_X
+  
+```{r trim-physeq, results='hide'}
+RemoveLowReadSamples <- function(df, physeq, numReadsCol, sampleNameCol,
+                                 lowReadThresh = 1000) {
+  # get the names of the samples that exceed threshold
+  keepSamples <- df %>% 
+    filter(!!sym(numReadsCol) > lowReadThresh) %>% 
+    pull(!!sym(sampleNameCol)) %>% 
+    as.character()
+  
+  # prune out the unwanted samples
+  physeqTrimmed <- physeq %>% 
+    prune_samples(samples = keepSamples) %>% 
+    RemoveMissingTaxa()
+  
+}
+
+numReadsColList <- c("rdp" = "readsPerSampleRDP", "silva" = "readsPerSampleSILVA")
+sampleNameColList <- c("rdp" = "sample", "silva" = "sequencing_file_name")
+
+physeqListTrimmed <- pmap(.l = list(physeq = physeqList,
+                                    numReadsCol = numReadsColList,
+                                    sampleNameCol = sampleNameColList,
+                                    df = sampleDataList),
+                          .f = RemoveLowReadSamples)
+physeqListTrimmed
+
+# extract sample data from the trimmed physeq objects
+sampleDataTrimmed <- map(.x = physeqListTrimmed,
+                         .f = ~ as(sample_data(.x), "data.frame"))
+```
+
+Removing these low read samples has decreased the total number of taxa in the 
+RDP data from 2,061 to 2,047, and in the SILVA data from 2,640 to 2,096.
+
+<br>
+
+---
+
+#### **Rarefy**
+
+<br>
+
+```{r physeqListRare, results='hide'}
+physeqListRare <- map(.x = physeqListTrimmed,
+                      .f = ~ rarefy_even_depth(.x, 
+                                               rngseed = 3973127))
+physeqListRare
+
+sampleDataRare <- map(.x = physeqListRare,
+                      .f = ~ as(sample_data(.x), "data.frame"))
+```
+
+Rarefying the data has reduced the total number of taxa in the RDP data set from
+2,047 to 1,590 and in the SILVA data set from 2,096 to 1,600.
+
+---
+
+<br>
+
+#### **Phyla Prevalence**
+
+Checking the prevalence and abundance of different phyla to help with analyzing
+biomarkers later in the workflow.
+
+```{r phylaPrev}
+phylaPrevRes <- map(.x = physeqListRare,
+                    .f = ~ TaxRankPrevalence(.x, "Phylum"))
+phylaPrevDFList <- map(.x = phylaPrevRes,
+                       .f = ~ .x$prevalence_df)
+
+phylaPrevPlots <- pmap(.l = list(prevDF = phylaPrevDFList,
+                                 physeqObj = physeqListRare,
+                                 myTitle = list("rdp" = "RDP",
+                                                "silva" = "SILVA"),
+                                 intercept_y = list("rdp" = 1/nsamples(physeqListRare$rdp),
+                                                    "silva" = 1/nsamples(physeqListRare$silva))),
+                       .f = PlotPhylaPrevalence)
+
+phylaPrevPlots
+```
+
+<br>
+
+### **Community Composition**
+
+```{r reactive-community-composition}
+#----- UI -----#
+
+fluidRow(
+  column(5,
+         # select comparison
+         selectInput(inputId = "communityComparison", 
+                     label = "Select Comparison:",
+                     choices = varsOfInterest,
+                     selected = "Sample_Type"),
+         # select taxonomic rank
+         selectInput(inputId = "communityTaxRank", label = "Select Rank:",
+                     choices = c("Kingdom", "Phylum", "Class",
+                                 "Order", "Family", "Genus",
+                                 "Species"),
+                     selected = "Phylum"),
+         # select abundance filter
+         sliderInput(inputId = "abdFilter", label = "Abundance Filter",
+                     min = 0, max = 1, step = 0.05, value = 0),
+         # update community composition plots
+         actionButton(inputId = "updateCommunity",
+                      label = "Update Community Plot"))
+)
+
+#----- React -----#
+
+VariableColumn <- reactive({
+  
+  variableCol <- input$communityComparison
+  
+  if (is.null(variableCol)) {
+    variableCol <- "Sample_Type"
+  }
+  
+  return(variableCol)
+})
+
+# RDP abundance DF
+CalculateAbundanceRDP <- eventReactive(input$updateCommunity, {
+  
+  withProgress(message = "Calculating Abundance...", value = 1, {
+    
+    abdDF <- MakeAbundanceDF(physeq = physeqListRare$rdp,
+                             taxRank = input$communityTaxRank,
+                             abundanceFilter = input$abdFilter,
+                             pruneMissing = FALSE)
+    
+    if (dim(abdDF)[1] == 0) {
+      stop("No taxa meet this filtering criteria. Trying lowering the Abundance Filter option.", 
+           call. = FALSE)
+    } else {
+      if (input$communityTaxRank == "Species") {
+        abdDF <- abdDF %>% 
+          mutate("GenusSpecies" = paste(Genus, Species, sep = " "))
+      }
+    }
+  })
+  
+  if (VariableColumn() == "bad_household") {
+    abdDF <- abdDF %>%
+      filter(!is.na(bad_household)) %>%
+      mutate(bad_household = ifelse(bad_household == TRUE,
+                                    yes = "Bad Household",
+                                    no = "Good Household"))
+  }
+
+  if (VariableColumn() == "Description") {
+    abdDF <- abdDF %>%
+      filter(Description %in% c("Chronic", "Acute"))
+  }
+
+  return(abdDF)
+  
+}, ignoreNULL = FALSE)
+
+
+# SILVA abundance DF
+CalculateAbundanceSILVA <- eventReactive(input$updateCommunity, {
+  
+  withProgress(message = "Calculating Abundance...", value = 1, {
+    
+    abdDF <- MakeAbundanceDF(physeq = physeqListRare$silva,
+                             taxRank = input$communityTaxRank,
+                             abundanceFilter = input$abdFilter,
+                             pruneMissing = FALSE)
+    
+    if (dim(abdDF)[1] == 0) {
+      stop("No taxa meet this filtering criteria. Trying lowering the Abundance Filter option.", 
+           call. = FALSE)
+    } else {
+      if (input$communityTaxRank == "Species") {
+        abdDF <- abdDF %>% 
+          mutate("GenusSpecies" = paste(Genus, Species, sep = " "))
+      }
+    }
+  })
+  
+  if (VariableColumn() == "bad_household") {
+    abdDF <- abdDF %>% 
+      filter(!is.na(bad_household)) %>% 
+      mutate(bad_household = ifelse(bad_household == TRUE,
+                                    yes = "Bad Household",
+                                    no = "Good Household"))
+  }
+  
+  if (VariableColumn() == "Description") {
+    abdDF <- abdDF %>% 
+      filter(Description %in% c("Chronic", "Acute"))
+  }
+  
+  return(abdDF)
+  
+}, ignoreNULL = FALSE)
+```
+
+```{r standardize-community-plot-colors}
+TaxaColors <- eventReactive(input$updateCommunity, {
+  
+  rdpTaxa <- CalculateAbundanceRDP() %>%
+    pull(!!sym(input$communityTaxRank)) %>% 
+    unique() %>%
+    as.character()
+  
+  silvaTaxa <- CalculateAbundanceSILVA() %>% 
+    pull(!!sym(input$communityTaxRank)) %>% 
+    unique() %>% 
+    as.character()
+  
+  allTaxa <- unique(c(rdpTaxa, silvaTaxa))
+  
+  taxaColors <- hue_pal()(length(allTaxa))
+  names(taxaColors) <- allTaxa
+  
+  return(taxaColors)
+    
+}, ignoreNULL = FALSE)
+```
+
+<h3>RDP</h3>
+
+```{r render-rdp-community}
+renderPlotly({
+  
+  facetBy <- as.formula(paste("~", isolate(input$communityComparison)))
+  
+  rdpCompPlot <- PlotCommunityComposition(abdDF = CalculateAbundanceRDP(),
+                                          taxRank = ifelse(isolate(input$communityTaxRank) == "Species",
+                                                           yes = "GenusSpecies",
+                                                           no = isolate(input$communityTaxRank)),
+                                          facetFormula = facetBy) +
+    scale_fill_manual(values = TaxaColors())
+  
+  ggplotly(rdpCompPlot, height = 500, width = 1000)
+})
+```
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+<h3>SILVA</h3>
+
+```{r render-silva-community}
+renderPlotly({
+  
+  facetBy <- as.formula(paste("~", isolate(input$communityComparison)))
+  
+  silvaCompPlot <- PlotCommunityComposition(abdDF = CalculateAbundanceSILVA(),
+                                          taxRank = ifelse(isolate(input$communityTaxRank) == "Species",
+                                                           yes = "GenusSpecies",
+                                                           no = isolate(input$communityTaxRank)),
+                                          facetFormula = facetBy) +
+    scale_fill_manual(values = TaxaColors())
+  
+  ggplotly(silvaCompPlot, height = 500, width = 1000)
+})
+```
+
+<br>
+
+### **Alpha Diversity**
+
+<h3>Alpha Diversity Metrics</h3>
+
+<ul>
+  <li>Richness</li>
+  <li>Pielou's Evenness</li>
+  <li>Shannon Diversity</li>
+  <li>Faith's Phylogenetic Diversity (PD)</li>
+</ul>
+
+```{r sampleDataRareAlpha}
+alphaIdxList <- list("Richness" = "observed",
+                     "Evenness" = "evenness_pielou",
+                     "Shannon Diversity" = "diversity_shannon",
+                     "Faith's PD" = "PD")
+
+alphaDivList <- map(.x = physeqListRare,
+                    .f = ~ microbiome::alpha(x = .x, 
+                                             index = c("observed",
+                                                       "diversity_shannon",
+                                                       "evenness_pielou")))
+
+# add faith's PD
+faithsPDList <- map(.x = physeqListRare,
+                    .f = ~ pd(samp = as.data.frame(.x@otu_table),
+                              tree = .x@phy_tree,
+                              include.root = FALSE))
+
+# combine alpha diversity metrics together, then merge with the sample data
+allAlphaDivList <- map2(.x = alphaDivList, .y = faithsPDList,
+                        .f = ~ merge(.x, .y, by = "row.names", all = TRUE) %>% 
+                          column_to_rownames(var = "Row.names"))
+
+# sampleDataRareAlpha contains "observed," "diversity_shannon," 
+#   "evenness_pielou," and "PD" columns
+sampleDataRareAlpha <- pmap(.l = list(x = sampleDataRare,
+                                      y = allAlphaDivList,
+                                      by.x = sampleNameColList),
+                            .f = base::merge,
+                            by.y = "row.names",
+                            all = TRUE)
+```
+
+```{r make-alpha-plots}
+# function to filter alpha diversity data frames for different variables
+FilterAlphaDF <- function(df) {
+  
+  varsNeedFiltering <- c("Household Type" = "bad_household",
+                         "CRPS Type" = "Description")
+  
+  # Household Type
+  alphaDFHHType <- df %>% 
+    filter(!is.na(bad_household)) %>% 
+    mutate(bad_household = ifelse(bad_household == TRUE,
+                                  yes = "Bad_Household",
+                                  no = "Good_Household"))
+  # CRPS Type
+  alphaDFCRPSType <- df %>% 
+    filter(Description %in% c("Acute", "Chronic"))
+  
+  alphaDFList <- list("Sample_Type" = df,
+                      "bad_household" = alphaDFHHType,
+                      "Description" = alphaDFCRPSType)
+  
+  return(alphaDFList)
+}
+
+# list of two elements (RDP and SILVA), each element having three nested lists
+alphaDFPlottingList <- map(.x = sampleDataRareAlpha,
+                           .f = FilterAlphaDF)
+```
+
+```{r alpha-plot-selection}
+fluidRow(
+  column(5,
+         wellPanel(
+           selectInput(inputId = "alphaPlot", label = "Select Comparison:",
+                       choices = varsOfInterest,
+                       selected = "Sample_Type")
+         ))
+)
+
+AlphaStatMethod <- reactive({
+  useMethod <- NULL
+  
+  if (is.null(input$alphaPlot)) {
+    input$alphaPlot <- "Sample_Type"
+  }
+  
+  if (input$alphaPlot == "Sample_Type") {
+    useMethod <- "kruskal.test"
+  } else {
+    useMethod <- "wilcox.test"
+  }
+  return(useMethod)
+})
+
+AlphaPlotsRDP <- reactive({
+  alphaPlotsRDP <- pmap(.l = list(yVar = alphaIdxList,
+                                  yLab = names(alphaIdxList),
+                                  alphaPlotTitle = names(alphaIdxList)),
+                        .f = PlotAlphaDiversity,
+                        df = alphaDFPlottingList$rdp[[input$alphaPlot]],
+                        xVar = input$alphaPlot,
+                        statMethod = AlphaStatMethod())
+})
+```
+
+```{r render-alpha-rdp}
+renderPlot({
+  annotate_figure(grid.arrange(AlphaPlotsRDP()[["Richness"]],
+                             AlphaPlotsRDP()[["Faith's PD"]],
+                             AlphaPlotsRDP()[["Shannon Diversity"]],
+                             ncol = 2, nrow = 2),
+                top = text_grob(paste("Alpha Diversity RDP"),
+                                size = 14))
+}, width = 900, height = 900)
+```
+
+<br>
+
+# render silva alpha plots

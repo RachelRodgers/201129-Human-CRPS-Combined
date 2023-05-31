@@ -1,0 +1,260 @@
+---
+title: "201129_HumanCRPSCombined_Format-RDP-Metadata"
+author: "Rachel Rodgers"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r load-libraries, message=FALSE}
+library("phyloseq")
+library("readxl")
+library("tidyverse")
+```
+
+Code originally from 201129_Human_CRPS_Combined_FormatMetadata.R
+
+```{r mappingFileList}
+mappingFileList <- c("run1" = "mappingFile_190201.txt",
+                     "run2" = "mappingFile_190318.txt",
+                     "run3" = "mappingFile_190523.txt",
+                     "run4" = "mappingFile_200127.txt",
+                     "run5" = "mappingFile_201019_LaraC_V4_Mouse_Human_CRPS.txt")
+
+mappingFiles <- map(paste0("../documents/RDP/", mappingFileList), read.delim, 
+                    header = TRUE, sep = "\t", stringsAsFactors = FALSE,
+                    check.names = FALSE)
+
+names(mappingFiles) <- names(mappingFileList)
+```
+
+## Format RDP Data for Demuxing
+
+### Generate RDP Metadata File for Demultiplexing
+
+```{r mapping-file-for-demultiplexing}
+# Contains only the data necessary for demuxing.
+
+# Find common column names among files
+allColNames <- map(mappingFiles, names)
+commonColNames <- Reduce(f = intersect, x = allColNames)
+
+# For each mapping file, pull out these common columns and add a run column
+trimmedMapFileList <- vector(mode = "list", length = length(mappingFiles))
+  
+for (i in 1:length(mappingFiles)) {
+  
+  currentRun <- names(mappingFiles)[i]
+  currentMap <- mappingFiles[[i]]
+  
+  trimmedDF <- currentMap %>% 
+    select(all_of(commonColNames)) %>% 
+    mutate("run" = currentRun) %>% 
+    select(`#SampleID`, BarcodeSequence, LinkerPrimerSequence, run, Description)
+  
+  trimmedMapFileList[[i]] <- trimmedDF
+  names(trimmedMapFileList)[i] <- currentRun
+  
+}
+
+# Combine the trimmed mapping files
+combinedMap <- Reduce(f = rbind, x = trimmedMapFileList)
+
+# Remove "CRPS Mouse", format the Description column, add other needed columns
+# Correct Baldridge34A which should have Description "Acute", not "Control"
+table(combinedMap$Description)
+#combinedMap[combinedMap$`#SampleID` == "Baldridge34A", "Description"] <- "Acute"
+
+combinedMapFmt <- combinedMap %>% 
+  filter(Description != "CRPS mouse") %>% 
+  mutate(Description = trimws(Description),
+         Description = str_replace(Description, 
+                                   pattern = " ", replacement = "_"),
+         Sample_Type = case_when(Description %in% c("Acute", "Chronic") ~ "CRPS",
+                                 Description == "Control" ~ "HHC",
+                                 TRUE ~ Description),
+         Sample_Status = case_when(Description %in% c("Acute", "Chronic") ~ "CRPS",
+                                   Description %in% c("Control", "BioBank_Control") ~ "healthy",
+                                   TRUE ~ Description)) %>% 
+  select(`#SampleID`, BarcodeSequence, LinkerPrimerSequence, run, Sample_Type,
+         Sample_Status, Description)
+
+table(combinedMapFmt$Description)
+```
+
+```{r save-mappingFile_201129_Human_CRPS_Combined.txt, eval=FALSE}
+write.table(combinedMapFmt, file = "../data/RDP/mappingFile_201129_Human_CRPS_Combined.txt",
+            quote = FALSE, sep = "\t", row.names = FALSE)
+```
+
+### Generate RDP Metadata File for 16S Analysis
+
+```{r add-run-number}
+# Contains all metadata.
+
+# Add run value if it doesn't already exist in the data frame
+modifiedMappingFiles <- vector(mode = "list", length = length(mappingFiles))
+
+for (i in 1:length(mappingFiles)) {
+  
+  currentMap <- mappingFiles[[i]]
+  currentRun <- str_extract(string = names(mappingFiles)[i],
+                            pattern = "[:digit:]")
+  
+  modMap <- NULL
+  
+  if (!"run" %in% names(currentMap)) {
+    modMap <- mutate(currentMap, "run" = currentRun)
+  } else {
+    modMap <- currentMap
+  }
+  # add to modifiedMappingFiles
+  modifiedMappingFiles[[i]] <- modMap
+  names(modifiedMappingFiles)[i] <- currentRun
+  
+}
+
+# Merge all together
+combinedSampleData <- Reduce(f = function(df1, df2) {merge(x = df1, y = df2, all = TRUE)},
+                             x = modifiedMappingFiles)
+
+# Remove unnecessary samples, format the table
+physeqRaw <- readRDS("../data/RDP/RDataObjects/physeqObjects/ps0.rdp_single.RDS")
+sampleNames <- sample_names(physeqRaw)
+
+sampleData <- combinedSampleData %>% 
+  dplyr::rename(sample = `#SampleID`) %>% 
+  dplyr::filter(sample %in% sampleNames) %>% 
+  dplyr::mutate(Description = trimws(Description),
+         Description = str_replace_all(Description,
+                                       pattern = " ", replacement = "_"),
+         Sample_Type = case_when(Description %in% c("Acute", "Chronic") ~ "CRPS",
+                                 Description == "Control" ~ "HHC",
+                                 TRUE ~ Description),
+         Sample_Status = case_when(Description %in% c("Acute", "Chronic") ~ "CRPS",
+                                   Description %in% c("Control", "BioBank_Control") ~ "healthy",
+                                   TRUE ~ Description)) %>% 
+  select(sample, Sample_Type, Sample_Status, Description, everything())
+```
+
+```{r save-sampleData.txt, eval=FALSE}
+write.table(sampleData, "../data/RDP/sampleData.txt",
+            quote = FALSE, sep = "\t", row.names = FALSE)
+```
+
+#### Add "sampleDataLC.txt" file
+
+This file was manually modified by Lara by appending to the previous metadata.
+
+```{r sampleDataModified}
+# Lara added additional metadata in the sampleDataLC.txt file
+sampleDataLC <- read.delim("../data/RDP/sampleDataLC.txt", 
+                           stringsAsFactors = FALSE, check.names = FALSE)
+
+# remove unneeded columns:
+sampleDataModified <- sampleDataLC %>% 
+  select(-c("BarcodeSequence", 
+            "LinkerPrimerSequence", "HTCF_path",
+            "index_1", "index_2", "bc_1", "bc_2", contains("16S.Barcode")))
+
+# change case of column names and replace "." with "_":
+colNames <- names(sampleDataModified)
+colNamesLower <- colNames %>% 
+  str_to_lower() %>% 
+  str_replace(pattern = "\\.", replacement = "_")
+
+names(sampleDataModified) <- colNamesLower
+
+# add a "household" column to more easily tell which samples are matched
+crpsHousehold <- sampleDataModified %>% 
+  filter(sample_type == "CRPS") %>% 
+  select(sample) %>% 
+  mutate("number" = str_extract(string = sample, pattern = "[:digit:]+"),
+         "letter" = str_extract(string = sample, pattern = "[:alpha:]?[:digit:]?$"),
+         "household" = paste(number, letter, sep = "-"),
+         "household" = str_remove(string = household, pattern = "[:digit:]?$")) %>% 
+  select(sample, household) %>% 
+  deframe()
+
+hhcHousehold <- sampleDataModified %>% 
+  filter(sample_type == "HHC") %>% 
+  select(sample, sample_match) %>% 
+  mutate("number" = str_extract(string = sample_match, pattern = "[:digit:]+"),
+         "letter" = str_extract(string = sample_match, pattern = "[:alpha:]?[:digit:]?$"),
+         "household" = paste(number, letter, sep = "-"),
+         "household" = str_remove(string = household, pattern = "[:digit:]?$")) %>% 
+  select(sample, household) %>% 
+  deframe()
+
+householdLUT <- c(crpsHousehold, hhcHousehold)
+
+sampleDataModified <- sampleDataModified %>% 
+  mutate("household" = ifelse(sample %in% names(householdLUT),
+                              yes = householdLUT[sample],
+                              no = sample_match)) %>% 
+  select("sample", "sample_type", "sample_status", "description", "run",
+         "condition", "crps_match", "sample_match", "household", everything())
+
+```
+
+```{r save-sampleDataModified, eval=FALSE}
+saveRDS(sampleDataModified, "../data/RDP/RDataObjects/sampleDataModified.RDS")
+```
+
+#### Add Reads per Sample
+
+```{r add-reads-per-sample}
+readsPerSample <- sample_sums(physeqRaw)
+sampleDataModified <- mutate(sampleDataModified,
+                             "readsPerSampleRDP" = readsPerSample[sample])
+```
+
+#### Add "HHC_pain.xlsx"
+
+```{r add-pain-data}
+# read-in HHC pain data
+hhcPain <- read_excel("../documents/RDP/original_documents/HHC_pain.xlsx") %>% 
+  select(sample, Sample_Status) %>% 
+  dplyr::rename(HHC_Sample_Status = Sample_Status)
+
+hhcSubgroupSamples <- hhcPain$sample
+
+# Edit the sample data to identify households with HHC that report pain ("bad" households)
+sampleDataModified <- merge(hhcPain, sampleDataModified, by = "sample", 
+                            all = TRUE) 
+
+badHouseholds <- sampleDataModified %>% 
+  filter(sample %in% hhcSubgroupSamples,
+         HHC_Sample_Status == "Pain") %>% 
+  pull(household)
+
+# add "bad_household" boolean column, and for non-biobank controls, a designation
+#   for HHC good/bad household and CRPS good/bad household
+sampleDataModified <- sampleDataModified %>% 
+  mutate("bad_household" = case_when(!sample_type %in% c("HHC", "CRPS") ~ NA,
+                                     household %in% badHouseholds &
+                                       sample_type %in% c("HHC", "CRPS") ~ TRUE,
+                                     TRUE ~ FALSE),
+         "status_household_description" = case_when(sample_status == "healthy" &
+                                                      sample_type == "HHC" &
+                                                      !bad_household ~ "HHC_good_household",
+                                                    sample_status == "healthy" &
+                                                      sample_type == "HHC" &
+                                                      bad_household ~ "HHC_bad_household",
+                                                    sample_status == "CRPS" &
+                                                      !bad_household ~ "CRPS_good_household",
+                                                    sample_status == "CRPS" &
+                                                      bad_household ~ "CRPS_bad_household",
+                                                    TRUE ~ sample_type)) %>% 
+  select("household", "bad_household", "status_household_description", 
+         everything())
+
+row.names(sampleDataModified) <- sampleDataModified$sample
+
+# 221122 - Remove sample Baldridge007B as per Lara's request
+sampleDataFinal <- sampleDataModified %>% 
+  filter(sample != "Baldridge007B")
+```
+
+```{r save-sampleDataFinal, eval=FALSE}
+saveRDS(sampleDataFinal, "../data/RDP/RDataObjects/sampleDataFinal.RDS")
+```

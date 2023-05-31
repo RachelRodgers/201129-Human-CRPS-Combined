@@ -261,7 +261,7 @@ walk2(.x = figPaths, .y = communityPlots,
                     units = "in"))
 ```
 
-```{r phylum-community-composition, eval=FALSE}
+```{r phylum-community-composition}
 phylumAbdDFList <- map(.x = physeqSubsetList,
                        .f = ~ MakeAbundanceDF(physeq = .x,
                                               taxRank = "Phylum",

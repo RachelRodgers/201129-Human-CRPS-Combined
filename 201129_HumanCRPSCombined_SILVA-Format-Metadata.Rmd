@@ -1,0 +1,234 @@
+---
+title: "201129_HumanCRPSCombined_Format-SILVA-Metadata"
+author: "Rachel Rodgers"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r load-libraries, message=FALSE}
+library("phyloseq")
+library("plyr")
+library("tidyverse")
+```
+
+# Overview
+
+The SILVA phyloseq object contains more samples than the older RDP object.
+For this study, we want to ignore the newer SILVA samples. 
+
+At the time of the newer SILVA annotation, QIIME1 is deprecated and the samples
+could not be re-demultiplexed to change the names to match the original
+mapping data files.
+
+In this script, I will combine the mapping data files from across the same runs
+as the original RDP data, but will need to use the sequencing file names instead
+of the sample names reported in the metadata file to combine the metadata with
+the SILVA annotated data.
+
+## Read in Metadata from "newDataMerged_LWC.txt"
+
+This file contains the latest metadata sent by Lara. However, it doesn't contain
+the full sequencing file names. Those will be added from a separate data frame,
+by first mapping the correct sequencing file names to the correct samples for
+each sequencing library.
+
+```{r newDataMerged-edited}
+newDataMergedLWC <- read.delim("../data/SILVA/metadata/newDataMerged_LWC.txt",
+                               check.names = FALSE,
+                               fileEncoding = "UTF-8-BOM")
+
+```
+
+## Combine Mapping Files from Across Five Runs
+
+```{r mappingFileList}
+mappingFileList <- c("run1" = "mappingFile_190201.txt",
+                     "run2" = "mappingFile_190318.txt",
+                     "run3" = "mappingFile_190523.txt",
+                     "run4" = "mappingFile_200127.txt",
+                     "run5" = "mappingFile_201019_LaraC_V4_Mouse_Human_CRPS.txt")
+
+mappingFiles <- map(paste0("../documents/RDP/", mappingFileList), read.delim, 
+                    header = TRUE, sep = "\t", stringsAsFactors = FALSE,
+                    check.names = FALSE)
+
+names(mappingFiles) <- names(mappingFileList)
+
+# add run numbers to mapping files
+modifiedMaps <- map2(.x = mappingFiles, .y = names(mappingFiles),
+                     .f = ~ mutate(.x, run = .y))
+```
+
+```{r combine-modify-mapping-files}
+combinedMappingFiles <- Reduce(f = rbind.fill, x = modifiedMaps)
+```
+
+## Add Sequencing File Names to Merged Data
+
+Since I will not be re-demultiplexing these samples, I need to add the correct
+sequencing file name to each sample name in the study.
+
+```{r read-in-sequencing-file-names}
+sequencingFileList <- c("run1" = "190201_Baldridge_CGMA_R1_FileNames.txt",
+                        "run2" = "190318_Baldridge_CGMA_R1_FileNames.txt",
+                        "run3" = "190523_Baldridge_CGMA_V4_R1_FileNames.txt",
+                        "run4" = "200127_Baldridge_CGMA_16S_R1_FileNames.txt",
+                        "run5" = "201019_LaraC_V4_Mouse_Human_CRPS_R1_FileNames.txt")
+
+sequencingFiles <- map(paste0("../documents/SILVA/sequencingFileNames/",
+                              sequencingFileList),
+                       read.delim,
+                       header = FALSE, col.names = "R1_file_name", sep = "\t",
+                       stringsAsFactors = FALSE)
+
+names(sequencingFiles) <- names(sequencingFileList)
+```
+
+### Run 1
+
+```{r modify-run1}
+mapRun1 <- mappingFiles$run1 # 6 samples
+seqRun1 <- sequencingFiles$run1 # 10 samples (includes fresh samples)
+
+seqRun1 <- seqRun1 %>% 
+  dplyr::mutate(unique_id = str_extract(R1_file_name, "CGMA_[:alnum:]+"),
+                unique_id = str_remove_all(unique_id, "_"))
+  
+mapRun1Final <- merge(seqRun1, mapRun1, by.x = "unique_id", by.y = "#SampleID",
+                      all = TRUE) %>% 
+  mutate(run = "1")
+```
+
+### Run 2
+
+```{r modify-run2}
+mapRun2 <- mappingFiles$run2 # 10 samples
+seqRun2 <- sequencingFiles$run2 # 24 samples (includes fresh samples)
+
+seqRun2 <- seqRun2 %>% 
+  dplyr::mutate(unique_id = str_extract(R1_file_name, "CGMA[:alnum:]+"))
+
+# There is a problem here where CGMA008A is not matching between files. 
+#   However, the patient ID in the map file says that this sample is labeled
+#   as 8.1 fresh, which does appear in the sequencing file. Manually adding
+#   its unique ID.
+
+seqRun2 <- seqRun2 %>% 
+  dplyr::mutate(unique_id = 
+                  ifelse(R1_file_name == "Baldridge_8-1_fresh_AGTCGAACGAGG_rc_CCTCGTTCGACT_index2_CTTGGTAGTGCC_rc_GGCACTACCAAG_S26_L001_R1_001.fastq.gz",
+                       yes = "CGMA008A", no = unique_id))
+
+mapRun2Final <- merge(seqRun2, mapRun2, by.x = "unique_id", by.y = "#SampleID",
+                      all = TRUE) %>% 
+  mutate(run = "2")
+```
+
+### Run 3
+
+```{r modify-run3}
+mapRun3 <- mappingFiles$run3 # 10 samples
+seqRun3 <- sequencingFiles$run3 # 23 samples
+
+seqRun3 <- seqRun3 %>% 
+  dplyr::mutate(unique_id = str_extract(R1_file_name, "CGMA[:alnum:]+"))
+
+# The samples are duplicated. According to Lara, A1 signifies frozen poop,
+#   and A1_2 is fresh poop. We want to use the frozen samples.
+seqRun3 <- seqRun3 %>% 
+  dplyr::mutate(isFrozen = ifelse(grepl("*_2_*", R1_file_name),
+                                  yes = FALSE, no = TRUE))
+seqRun3Frozen <- seqRun3 %>% 
+  filter(isFrozen) %>% 
+  select(-isFrozen)
+
+mapRun3Final <- merge(seqRun3Frozen, mapRun3, by.x = "unique_id", 
+                      by.y = "#SampleID", all = TRUE) %>% 
+  mutate(run = "3")
+```
+
+### Run 4
+
+```{r modify-run4}
+mapRun4 <- mappingFiles$run4 # 20 samples
+seqRun4 <- sequencingFiles$run4 # 25 samples
+
+seqRun4 <- seqRun4 %>% 
+  dplyr::mutate(unique_id = str_extract(R1_file_name, 
+                                        "^Baldridge_[:alnum:]+"),
+                id_num = str_remove(unique_id, "Baldridge_"),
+                # remove leading 0 from all ids except Baldridge007B
+                id_num = ifelse(id_num != "007B",
+                                yes = str_remove(id_num, "^0"), no = id_num),
+                unique_id = paste0("Baldridge", id_num)) %>% 
+  select(-id_num)
+                
+mapRun4Final <- merge(seqRun4, mapRun4, by.x = "unique_id", by.y = "#SampleID",
+                      all = TRUE) %>% 
+  mutate(run = "4")
+```
+
+### Run 5
+
+```{r modify-run-5}
+mapRun5 <- mappingFiles$run5 # 124 samples
+# Some of the samples in run 5 are for mice. We don't want to consider them
+#   for this analysis, so they should be removed first.
+mapRun5NoMice <- filter(mapRun5, Description != "CRPS mouse") # 24 samples
+seqRun5 <- sequencingFiles$run5 # 123 samples
+
+seqRun5 <- seqRun5 %>% 
+  mutate(unique_id = str_extract(R1_file_name, "^Baldridge_[:alnum:]+"))
+
+mapRun5Final <- merge(seqRun5, mapRun5NoMice, by.x = "unique_id", 
+                      by.y = "#SampleID", all = TRUE) %>% 
+  mutate(run = "5") #23 (Baldridge_C wasn't sequenced)
+```
+
+## Combine Sequencing Files
+
+```{r merge-mapping-files}
+modifiedMappingFiles <- list(mapRun1Final, mapRun2Final, mapRun3Final,
+                             mapRun4Final, mapRun5Final)
+
+combinedSampleData <- Reduce(f = rbind.fill, x = modifiedMappingFiles) %>% 
+  relocate("Description", .after = "unique_id") %>% 
+  mutate(unique_id = ifelse(unique_id == "CGMA-14",
+                            yes = "CGMA-62", no = unique_id))
+```
+
+## Finalize the Metadata
+
+```{r finalize-metadata}
+# Using the combined sequencing files which contain sequencing file names linked
+#   to sample names, add the sequencing file names to the new metadata
+# add sequencing file name from combinedSampleData. Add run data if needed
+seqNameLUT <- combinedSampleData %>% 
+  select(unique_id, R1_file_name) %>% 
+  deframe()
+
+runLUT <- combinedSampleData %>% 
+  select(unique_id, run) %>% 
+  deframe()
+
+sampleDataFinal <- newDataMergedLWC %>% 
+  mutate(R1_file_name = seqNameLUT[sample],
+         run = ifelse(is.na(run), yes = runLUT[sample], no = run),
+         sequencing_file_name = str_remove(R1_file_name,
+                                           "_R1_001.fastq.gz")) %>% 
+  select(sample, sequencing_file_name, run, everything())
+```
+
+## Modify Reads Per Sample to match the physeqSILVA Object
+
+```{r add-reads-per-sample}
+physeqRaw <- readRDS("../data/SILVA/RDataObjects/physeqObjects/ps0.silva_single.RDS")
+readsPerSample <- sample_sums(physeqRaw)
+
+sampleDataFinal <- mutate(sampleDataFinal,
+                          "readsPerSampleSILVA" = readsPerSample[sequencing_file_name])
+```
+
+```{r save-sample-data-final, eval=FALSE}
+saveRDS(sampleDataFinal, "../data/SILVA/RDataObjects/sampleDataFinal.RDS")
+```
+

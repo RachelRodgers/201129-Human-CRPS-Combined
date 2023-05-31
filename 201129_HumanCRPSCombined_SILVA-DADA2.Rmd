@@ -1,0 +1,155 @@
+---
+title: "DADA2 (Pathogen Server): 201129 Human CRPS Combined (SILVA)"
+author: "Rachel Rodgers"
+date: '`r format(Sys.Date(), "%B, %d, %Y")`'
+output: html_document
+---
+
+```{r load-libraries}
+library("dada2")
+library("msa")
+library("phangorn")
+library("phyloseq")
+library("tidyverse")
+```
+
+```{r set-directories}
+#----- Raw Data & Filtered Data Paths -----#
+inputDir <- "../data/raw_data"
+filteredDir <- "../data/filtered"
+
+#----- Taxonomy Database Paths -----#
+taxonomyDBPath <- "/mnt/pathogen1/rrodgers/databases/dada2_taxonomy"
+
+# Silva
+silvaDB <- file.path(taxonomyDBPath, "silva_v138.1/silva_nr99_v138.1_train_set.fa.gz")
+silvaDBSpecies <- file.path(taxonomyDBPath, "silva_v138.1/silva_species_assignment_v138.1.fa.gz")
+```
+
+The raw data directory may contain samples not needed in the current study.
+Here I will use the data contained in the compiled metadata to select just the
+required samples.
+
+```{r select-samples}
+sampleData <- readRDS("../data/RDataObjects/sampleDataFinal.RDS")
+
+includeSamples <- sampleData %>% 
+  filter(!is.na(R1_file_name)) %>% 
+  pull(R1_file_name) %>% 
+  as.character() # 118 samples
+
+# grab only the relevant files so we're ignoring extra samples when 
+#   assessing quality
+allInputFiles <- sort(list.files(inputDir, pattern = "_R1_001.fastq.gz")) # 155
+inputFiles <- allInputFiles[allInputFiles %in% includeSamples] # 118
+
+inputFilePath <- file.path(inputDir, inputFiles)
+```
+
+Check raw read quality.
+
+```{r rawQualPlot}
+rawQualPlot <- plotQualityProfile(inputFilePath, aggregate = TRUE)
+rawQualPlot
+```
+
+The reads maintain good quality throughout, so I will trim just the last 10 nucleotides.
+
+```{r filter-and-trim}
+filterAndTrim(fwd = file.path(inputDir, inputFiles),
+              filt = file.path(filteredDir, inputFiles),
+              trimLeft = 10, maxEE = 2, truncQ = 11,
+              maxN = 0, rm.phix = TRUE, compress = TRUE,
+              verbose = TRUE, truncLen = 240)
+```
+
+Infer error rates.
+
+```{r filteredFiles}
+# Get list of filtered files and assign sample names to them
+filteredFiles <- list.files(filteredDir, pattern = "fastq", full.names = TRUE)
+# Get the sample names by removing the .fastq and path 
+sampleNames <- map_chr(basename(filteredFiles), 
+                       ~str_remove(string = .x, pattern = "_R1_001.fastq.gz$"))
+# Assign the sample names to the filteredFiles vector
+names(filteredFiles) <- sampleNames
+```
+
+```{r errF, fig.width=9, fig.height=6}
+set.seed(91531713)
+errF <- learnErrors(filteredFiles, multithread = TRUE)
+errorPlot <- plotErrors(errF, nominalQ = TRUE)
+errorPlot
+```
+
+Dereplicate.
+
+```{r dereplication}
+# Create a list that will hold dereplication objects for each sample
+singles <- vector("list", length(sampleNames))
+names(singles) <- sampleNames
+
+# Populate the list
+for(sample in sampleNames) {
+  derepF <- derepFastq(filteredFiles[[sample]])
+  singles[[sample]] <- dada(derepF, err = errF, multithread = TRUE)
+}
+```
+
+```{r sequence-table}
+# Construct sequence table and remove chimeras
+sequenceTable <- makeSequenceTable(singles)
+sequenceTableNoChimeras <- removeBimeraDenovo(sequenceTable,
+                                              multithread = TRUE)
+```
+
+```{r assign-taxonomy}
+taxaRankNamesFull <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+taxaRankNamesTrunc <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")
+
+# Silva
+taxaSilva <- assignTaxonomy(sequenceTableNoChimeras, silvaDB, multithread = TRUE)
+#colnames(taxaSilva) <- taxaRankNamesTrunc
+taxaSilvaPlus <- addSpecies(taxaSilva, silvaDBSpecies)
+```
+
+```{r construct-phylogenetic-tree}
+# Get the sequences from the sequence table
+seqs <- getSequences(sequenceTableNoChimeras)
+names(seqs) <- seqs
+# Multiple sequence alignment
+mult <- msa(seqs, method = "ClustalW", type = "dna", order = "input")
+# Convert MSA to phyDAT format
+phangAlign <- as.phyDat(mult, type = "dna", order = "input")
+# Compute pairwise distances on phangAlign
+dm <- dist.ml(phangAlign)
+treeNJ <- NJ(dm)
+# Compute likelihood of tree
+fit <- pml(tree = treeNJ, data = phangAlign)
+fitGTR <- update(fit, k = 4, inv = 0.2)
+fitGTR <- optim.pml(fitGTR, model = "GTR", optInv = TRUE, optGamma = TRUE,
+                    rearrangement = "stochastic", 
+                    control = pml.control(trace = 0))
+
+save.image()
+```
+
+```{r build-phyloseq-objects}
+dir.create("../data/RDataObjects/physeqObjects")
+
+# silva
+ps0.silva <- phyloseq(otu_table(sequenceTableNoChimeras, taxa_are_rows = FALSE),
+                      tax_table(taxaSilvaPlus), phy_tree(fitGTR$tree))
+ps0.silva # 2688 x 118
+saveRDS(ps0.silva, "../data/RDataObjects/physeqObjects/ps0.silva_single.RDS")
+
+```
+
+```{r save-data}
+save.image("230317_HumanCRPSCombinedSILVA_dada2.RData") # read back w/ load() or attach()
+writeLines(capture.output(sessionInfo()), 
+           "230317_HumanCRPSCombinedSILVA_dada2_session_info.txt")
+Sys.Date()
+getwd()
+sessionInfo()
+```

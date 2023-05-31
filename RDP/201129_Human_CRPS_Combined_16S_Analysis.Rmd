@@ -244,6 +244,8 @@ renderPlot({
 
 Despite removal of low-read samples, significant difference in average read exists for some sample groupings.  Because a significant difference still exists between groups, we will rarefy the data set.
 
+#### **Rarefy**
+
 ```{r rarefy, results='hide'}
 # Rarefy
 physeqRare <- rarefy_even_depth(physeqTrimmed, rngseed = 2236001)
