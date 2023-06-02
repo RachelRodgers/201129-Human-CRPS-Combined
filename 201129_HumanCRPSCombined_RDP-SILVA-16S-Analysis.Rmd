@@ -31,10 +31,12 @@ library("plyr")
 library("DT")
 library("picante")
 library("gridExtra")
+library("DESeq2")
 library("tidyverse")
 
 source("./shared_R_scripts/Helper_Functions.R")
 source("./shared_R_scripts/BoxPlotHelpers.R")
+source("./shared_R_scripts/BiomarkerHelpers.R")
 
 options(shiny.sanitize.errors = FALSE)
 ```
@@ -285,7 +287,8 @@ fluidRow(
                      min = 0, max = 1, step = 0.05, value = 0),
          # update community composition plots
          actionButton(inputId = "updateCommunity",
-                      label = "Update Community Plot"))
+                      label = "Update Community Plot")
+         )
 )
 
 #----- React -----#
@@ -462,6 +465,11 @@ renderPlotly({
   <li>Faith's Phylogenetic Diversity (PD)</li>
 </ul>
 
+In both the RDP and SILVA data, significant differences in all alpha diversity 
+metrics are seen when comparing "bad" households to "good" households. In this
+case, the average values for richness, evenness, and diversity are lower on 
+average in bad households compared to good.
+
 ```{r sampleDataRareAlpha}
 alphaIdxList <- list("Richness" = "observed",
                      "Evenness" = "evenness_pielou",
@@ -531,8 +539,9 @@ fluidRow(
            selectInput(inputId = "alphaPlot", label = "Select Comparison:",
                        choices = varsOfInterest,
                        selected = "Sample_Type")
-         ))
-)
+           )
+         )
+  )
 
 AlphaStatMethod <- reactive({
   useMethod <- NULL
@@ -558,7 +567,23 @@ AlphaPlotsRDP <- reactive({
                         xVar = input$alphaPlot,
                         statMethod = AlphaStatMethod())
 })
+
+AlphaPlotsSILVA <- reactive({
+  alphaPlotsSILVA <- pmap(.l = list(yVar = alphaIdxList,
+                                  yLab = names(alphaIdxList),
+                                  alphaPlotTitle = names(alphaIdxList)),
+                        .f = PlotAlphaDiversity,
+                        df = alphaDFPlottingList$silva[[input$alphaPlot]],
+                        xVar = input$alphaPlot,
+                        statMethod = AlphaStatMethod())
+})
 ```
+
+---
+
+<h4>RDP Data:</h4>
+
+<br>
 
 ```{r render-alpha-rdp}
 renderPlot({
@@ -572,5 +597,754 @@ renderPlot({
 ```
 
 <br>
+<br>
 
-# render silva alpha plots
+---
+
+<h4>SILVA Data:</h4>
+
+<br>
+
+```{r render-alpha-silva}
+renderPlot({
+  annotate_figure(grid.arrange(AlphaPlotsSILVA()[["Richness"]],
+                             AlphaPlotsSILVA()[["Faith's PD"]],
+                             AlphaPlotsSILVA()[["Shannon Diversity"]],
+                             ncol = 2, nrow = 2),
+                top = text_grob(paste("Alpha Diversity SILVA"),
+                                size = 14))
+}, width = 900, height = 900)
+```
+
+<br>
+<br>
+
+### **Beta Diversity**
+
+<h3>PCoA Plots</h3>
+
+In the RDP and SILVA data, grouping of samples is significant by household status 
+(good vs. bad) for both UniFrac and weighted UniFrac distance measures.
+
+The grouping of samples is also significant between CRPS and BioBank controls
+in both the RDP and SILVA data sets when using the weighted UniFrac distance measure.
+
+<br>
+<br>
+
+```{r beta-diversity-ui}
+fluidRow(
+  column(5,
+         wellPanel(
+           # select groups to compare
+           selectInput(inputId = "betaComparison",
+                       label = "Select Comparison:",
+                       choices = c("CRPS vs. BioBank",
+                                   "CRPS vs. Household Controls",
+                                   "Acute CRPS vs. Chronic CRPS",
+                                   "Good Households vs. Bad Households"),
+                       selected = "CRPS vs. BioBank"),
+           # select distance measure
+           selectInput(inputId = "betaDistance",
+                       label = "Distance Measure:",
+                       choices = c("UniFrac" = "unifrac",
+                                   "Weighted UniFrac" = "wunifrac"),
+                       selected = "UniFrac"),
+           # show ellipses?
+           checkboxInput(inputId = "betaEllipsesBool",
+                         label = "Show Confidence Ellipses",
+                         value = FALSE),
+           # update
+           actionButton(inputId = "betaUpdate",
+                        label = "Update Beta Diversity Plots",
+                        icon = icon("fas fa-sync-alt"))
+           )
+         )
+  )
+```
+
+```{r set-reactive-values-needed-for-beta-div-and-biomarkers}
+# Reactive values calculated ahead of time needed for beta diversity plotting
+
+#----- Subsetted Data Frames -----#
+# Will use one of the sample data frames because samples are the same in both
+#   rdp and silva
+df <- sampleDataRare$rdp
+
+# possible subsets:
+crpsBB <- df %>% filter(Sample_Type %in% c("CRPS", "BioBank_Control"))
+crpsHHC <- df %>% filter(Sample_Type %in% c("CRPS", "HHC"))
+crpsType <- df %>% filter(Description %in% c("Acute", "Chronic"))
+hhcType <- df %>% filter(!is.na(bad_household_chr))
+
+# store in reactive value so accessible to shiny:
+dfSubsetList <- reactiveValues()
+dfSubsetList$`CRPS vs. BioBank` <- crpsBB
+dfSubsetList$`CRPS vs. Household Controls` <- crpsHHC
+dfSubsetList$`Acute CRPS vs. Chronic CRPS` <- crpsType
+dfSubsetList$`Good Households vs. Bad Households` <- hhcType
+
+#----- Column Names Corresponding to Selected Comparison -----#
+# store the corresponding variable colname in reactive value:
+colNameLUT <- reactiveValues()
+colNameLUT$`CRPS vs. BioBank` <- "Sample_Type"
+colNameLUT$`CRPS vs. Household Controls` <- "Sample_Type"
+colNameLUT$`Acute CRPS vs. Chronic CRPS` <- "Description"
+colNameLUT$`Good Households vs. Bad Households` <- "bad_household_chr"
+
+#----- Color and Shape Customizations for Plots -----#
+colorVector <- reactiveValues()
+colorVector$`CRPS vs. BioBank` <- c("CRPS" = "#FB0101", 
+                                    "BioBank_Control" = "#FECC66")
+colorVector$`CRPS vs. Household Controls` <- c("CRPS" = "#FB0101", 
+                                               "HHC" = "#3333CC")
+colorVector$`Acute CRPS vs. Chronic CRPS` <- c("Acute" = "#CC66FF", 
+                                               "Chronic" = "#408002")
+colorVector$`Good Households vs. Bad Households` <- c("Good Household" = "#EB3BEB",
+                                                      "Bad Household" = "#FF0700")
+
+shapeVector <- reactiveValues()
+shapeVector$`CRPS vs. BioBank` <- c("CRPS" = 15, "BioBank_Control" = 16)
+shapeVector$`CRPS vs. Household Controls` <- c("CRPS" = 15, "HHC" = 16)
+shapeVector$`Acute CRPS vs. Chronic CRPS` <- c("Acute" = 17, "Chronic" = 18)
+shapeVector$`Good Households vs. Bad Households` <- c("Good Household" = 18, 
+                                                      "Bad Household" = 17)
+```
+
+```{r beta-diversity-reactive}
+
+#----- Subset Physeq -----#
+
+# Subset both physeq objects in physeqListRare to contain just the samples
+#   of interest (returned by input$betaComparison) for plotting.
+
+# For subsetting ps objs:
+#   RDP samples in "sample" col
+#   SILVA samples in "sequencing_file_name" col
+
+# Set initial value of betaComparison
+BetaComparison <- reactive({
+  betaComparison <- input$betaComparison
+  
+  if (is.null(betaComparison)) {
+    betaComparison <- "CRPS vs. BioBank"
+  }
+  
+  return(betaComparison)
+})
+
+#observe(print(BetaComparison()))
+
+SubsetPhyseq <- eventReactive(input$betaUpdate, {
+  
+  selectedComparison <- BetaComparison()
+  
+  # select appropriate samples based on selectedComparison
+  # this only needs to be done with one of the two sample data frames since
+  #   the set of samples is the same
+  
+  keepSamplesRDP <- dfSubsetList[[BetaComparison()]] %>% 
+    pull(sample) %>% 
+    as.character()
+  
+  keepSamplesSILVA <- dfSubsetList[[BetaComparison()]] %>%
+    pull(sequencing_file_name) %>%
+    as.character()
+
+  physeqSubsetList <- map2(.x = physeqListRare,
+                           .y = list("rdp" = keepSamplesRDP,
+                                     "silva" = keepSamplesSILVA),
+                           .f = ~ prune_samples(samples = .y,
+                                                x = .x))
+  
+  return(physeqSubsetList)
+  
+  
+}, ignoreNULL = FALSE)
+
+#observe(print(SubsetPhyseq()))
+
+#----- Calculate Ordinations -----#
+
+# Calculate weighted and unweighted ordinations on the physeq objects
+OrdinationList <- eventReactive(input$betaUpdate, {
+  
+  withProgress(message = "Calculating ordinations...", value = 1, {
+    set.seed(16738558)
+    
+    ordList <- map(.x = SubsetPhyseq(),
+                   .f = ~ ordinate(physeq = .x,
+                                   method = "PCoA",
+                                   distance = input$betaDistance))
+    })
+  
+}, ignoreNULL = FALSE)
+
+#----- Calculate ADONIS -----#
+
+AdonisPVals <- eventReactive(input$betaUpdate, {
+  
+  selectedDistance <- input$betaDistance
+  
+  if (is.null(input$betaDistance)) {
+    selectedDistance <- "unifrac"
+  }
+  
+  withProgress(message = "Calculating ADONIS...", value = 1, {
+    
+    set.seed(16738558)
+    
+    adonisResList <- map(.x = SubsetPhyseq(),
+                         .f = ~ RunAdonis(physeqObj = .x,
+                                          category = colNameLUT[[BetaComparison()]],
+                                          distance = selectedDistance))
+    
+    adonisPVals <- map(.x = adonisResList,
+                       .f = ~ .x$aov.tab$`Pr(>F)`[1])
+    })
+
+}, ignoreNULL = FALSE)
+
+#observe(print(AdonisPVals()))
+
+```
+
+<h4>RDP Data:</h4>
+
+<br>
+
+```{r render-rdp-beta-plot}
+renderPlot({
+  
+  # for plot title
+  distanceString <- NULL
+  
+  if (isolate(input$betaDistance) == "unifrac") {
+    distanceString <- "UniFrac Distance"
+  } else {
+    distanceString <- "WUniFrac Distance"
+  }
+  
+  # for combining legends
+  legendName <- NULL
+  
+  if (isolate(BetaComparison()) == "CRPS vs. BioBank" | 
+      isolate(BetaComparison()) == "CRPS vs. Household Controls") {
+    legendName <- "Sample Type"
+  } else if (isolate(BetaComparison()) == "Acute CRPS vs. Chronic CRPS") {
+    legendName <- "CRPS Type"
+  } else if (isolate(BetaComparison()) == "Good Households vs. Bad Households") {
+    legendName <- "Household Type"
+  }
+  
+  basePlot <- plot_ordination(physeq = SubsetPhyseq()$rdp,
+                              ordination = OrdinationList()$rdp,
+                              color = colNameLUT[[isolate(BetaComparison())]],
+                              shape = colNameLUT[[isolate(BetaComparison())]]) +
+    scale_color_manual(values = colorVector[[isolate(BetaComparison())]],
+                       name = legendName) +
+    scale_shape_manual(values = shapeVector[[isolate(BetaComparison())]],
+                       name = legendName) +
+    labs(color = isolate(BetaComparison())) +
+    theme_bw() +
+    geom_point(size = 5) +
+    ggtitle(paste0("RDP: ", isolate(BetaComparison()), " (", distanceString, ")"), 
+            subtitle = paste0("ADONIS p-val: ", isolate(AdonisPVals())$rdp)) +
+    theme(plot.title = element_text(hjust = 0.5, size = 14),
+          plot.subtitle = element_text(hjust = 0.5, size = 12),
+          axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 14))
+  
+  if (isolate(input$betaEllipsesBool)) {
+    basePlot <- basePlot + stat_ellipse(type = "norm")
+  }
+  
+  basePlot
+  
+}, height = 600, width = 900)
+```
+
+<br>
+<br>
+
+---
+
+<br>
+<br>
+
+<h4>SILVA Data:</h4>
+
+<br>
+
+```{r render-silva-beta-plot}
+renderPlot({
+  
+  # for plot title
+  distanceString <- NULL
+  
+  if (isolate(input$betaDistance) == "unifrac") {
+    distanceString <- "UniFrac Distance"
+  } else {
+    distanceString <- "WUniFrac Distance"
+  }
+  
+  # for combining legends
+  legendName <- NULL
+  
+  if (isolate(BetaComparison()) == "CRPS vs. BioBank" | 
+      isolate(BetaComparison()) == "CRPS vs. Household Controls") {
+    legendName <- "Sample Type"
+  } else if (isolate(BetaComparison()) == "Acute CRPS vs. Chronic CRPS") {
+    legendName <- "CRPS Type"
+  } else if (isolate(BetaComparison()) == "Good Households vs. Bad Households") {
+    legendName <- "Household Type"
+  }
+  
+  basePlot <- plot_ordination(physeq = SubsetPhyseq()$silva,
+                              ordination = OrdinationList()$silva,
+                              color = colNameLUT[[isolate(BetaComparison())]],
+                              shape = colNameLUT[[isolate(BetaComparison())]]) +
+    scale_color_manual(values = colorVector[[isolate(BetaComparison())]],
+                       name = legendName) +
+    scale_shape_manual(values = shapeVector[[isolate(BetaComparison())]],
+                       name = legendName) +
+    labs(color = isolate(BetaComparison())) +
+    theme_bw() +
+    geom_point(size = 5) +
+    ggtitle(paste0("SILVA: ", isolate(BetaComparison()), " (", distanceString, ")"), 
+            subtitle = paste0("ADONIS p-val: ", isolate(AdonisPVals())$rdp)) +
+    theme(plot.title = element_text(hjust = 0.5, size = 14),
+          plot.subtitle = element_text(hjust = 0.5, size = 12),
+          axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 14))
+  
+  if (isolate(input$betaEllipsesBool)) {
+    basePlot <- basePlot + stat_ellipse(type = "norm")
+  }
+  
+  basePlot
+  
+}, height = 600, width = 900)
+```
+
+<br>
+<br>
+
+---
+
+<br>
+<br>
+
+### **Pairwise Distances**
+
+<h3>Pairwise UniFrac & Weighted UniFrac Distances of Good and Bad Households</h3>
+
+When looking at the pairwise distances between samples from good and bad households, 
+the RDP and SILVA data shows significantly lower average distance between samples from good 
+households compared to bad when using the weighted UniFrac distance measure.
+
+```{r pairwise-distances-rdp, eval=FALSE, include=FALSE}
+# RDP Data
+set.seed(16738558)
+
+# Calculate the distance objects
+rdpDistances <- map(.x = list("UniFrac" = FALSE,
+                              "Weighted UniFrac" = TRUE),
+                    .f = ~ as.matrix(phyloseq::UniFrac(physeq = physeqListRare$rdp,
+                                                       weighted = .x)))
+# Melt and remove values of 0 to eliminate samples distances to themselves
+rdpDistMelt <- map2(.x = rdpDistances,
+                    .y = list("UniFrac" = "UniFrac_Distance",
+                              "Weighted UniFrac" = "WUniFrac_Distance"),
+                    .f = ~ reshape2::melt(.x, value.name = .y) %>% 
+                      mutate(is_self = ifelse(Var1 == Var2,
+                                              yes = TRUE,
+                                              no = FALSE)) %>% 
+                      filter(!is_self) %>% 
+                      select(-is_self) %>% 
+                      mutate(across(where(is.factor), as.character)) %>% 
+                      distinct())
+
+# Remove duplicated measures
+rdpDistNoDupes <- map(.x = rdpDistMelt,
+                      .f = ~ data.frame(t(base::apply(.x, 1, sort))) %>% 
+                        distinct())
+names(rdpDistNoDupes$UniFrac) <- c("UniFrac_Distance", "Var1", "Var2")
+names(rdpDistNoDupes$`Weighted UniFrac`) <- c("WUniFrac_Distance",
+                                              "Var1", "Var2")
+rdpDistNoDupes <- map(.x = rdpDistNoDupes,
+                      .f = ~ .x %>% 
+                        mutate(across(ends_with("Distance"),
+                                      as.numeric)))
+
+# remove dupes somehow
+# test <- data.frame(V1 = c("A", "A", "B", "B", "C", "C"),
+#            V2 = c("B", "C", "A", "C", "A", "B"),
+#            n = c(1, 3, 1, 2, 3, 2))
+# test2 <- base::apply(test, 1, sort)
+# test3 <- data.frame(t(test2))
+# test4 <- distinct(test3)
+
+# Add household type metadata to the melted data
+rdpHHTypeLUT <- sampleDataRare$rdp %>% 
+  select(sample, bad_household_chr) %>% 
+  deframe()
+
+rdpDistMeltHH <- map(.x = rdpDistNoDupes,
+                     .f = ~ .x %>%
+                       mutate(Var1_Type = rdpHHTypeLUT[Var1],
+                              Var2_Type = rdpHHTypeLUT[Var2]))
+
+# Select bad-bad HH distances, and good-good HH distances
+rdpBadHHDist <- map(.x = rdpDistMeltHH,
+                    .f = ~ filter(.x,
+                                  Var1_Type == "Bad Household" & 
+                                    Var2_Type == "Bad Household"))
+
+rdpGoodHHDist <- map(.x = rdpDistMeltHH,
+                     .f = ~ filter(.x,
+                                   Var1_Type == "Good Household" &
+                                     Var2_Type == "Good Household"))
+
+
+
+
+
+# rbind good-good and bad-bad for UniFrac & Weighted UniFrac distances
+rdpUniFracDist <- rbind(rdpBadHHDist$UniFrac, rdpGoodHHDist$UniFrac)
+rdpWUniFracDist <- rbind(rdpBadHHDist$`Weighted UniFrac`,
+                         rdpGoodHHDist$`Weighted UniFrac`)
+
+# Make box plot of good versus bad HH average Unifrac & Weighted UniFrac distances
+rdpDistBox <- pmap(.l = list(df = list("UniFrac" = rdpUniFracDist,
+                                       "Weighted UniFrac" = rdpWUniFracDist),
+                             yVar = list("UniFrac" = "UniFrac_Distance",
+                                         "Weighted UniFrac" = "WUniFrac_Distance"),
+                             plotTitle = names(rdpDistances),
+                             label_y = list("UniFrac" = "UniFrac Distance",
+                                            "Weighted UniFrac" = "Weighted UniFrac Distance")),
+                   .f = PrettyBox,
+                   xVar = "Var1_Type",
+                   statMethod = "kruskal.test",
+                   colorVals = c("Bad Household" = "#FF0700",
+                                 "Good Household" = "#EB3BEB"))
+# PrettyBox(df = rdpUniFracDist,
+#           xVar = "Var1_Type",
+#           yVar = "UniFrac_Distance",
+#           plotTitle = "UniFrac",
+#           colorVals = c("Bad Household" = "#FF0700", "Good Household" = "#EB3BEB"),
+#           statMethod = "kruskal.test")
+
+
+
+rdpDistBoxArr <- annotate_figure(grid.arrange(rdpDistBox$UniFrac,
+                                              rdpDistBox$`Weighted UniFrac`,
+                                              ncol = 2, nrow = 1),
+                                 top = text_grob("RDP Data\nAvg. Distances of Good and Bad Households", 
+                                                 size = 14),
+                                 bottom = text_grob("Household Type", size = 12))
+rdpDistBoxArr
+```
+
+```{r pairwise-distance-plots}
+PlotPairwiseDist <- function(physeqObj, sampleDataDF, sampleNameCol,
+                             dataName) {
+  
+  # Calculate the distance objects
+  set.seed(16738558)
+
+  distances <- map(.x = list("UniFrac" = FALSE, "Weighted UniFrac" = TRUE),
+                   .f = ~ as.matrix(phyloseq::UniFrac(physeq = physeqObj,
+                                                      weighted = .x)))
+  
+  # Melt and remove values of 0 to eliminate samples distances to themselves
+  distMelt <- map2(.x = distances,
+                   .y = list("UniFrac" = "UniFrac_Distance",
+                             "Weighted UniFrac" = "WUniFrac_Distance"),
+                   .f = ~ reshape2::melt(.x, value.name = .y) %>%
+                     mutate(is_self = ifelse(Var1 == Var2,
+                                             yes = TRUE, no = FALSE)) %>%
+                     filter(!is_self) %>%
+                     select(-is_self) %>%
+                     mutate(across(where(is.factor), as.character)))
+  
+  # Remove duplicated measures
+  distMeltNoDupes <- map(.x = distMelt,
+                         .f = ~ data.frame(t(base::apply(.x, 1, sort))) %>%
+                           distinct())
+  
+  names(distMeltNoDupes$UniFrac) <- c("UniFrac_Distance", "Var1", "Var2")
+  names(distMeltNoDupes$`Weighted UniFrac`) <- c("WUniFrac_Distance",
+                                                 "Var1", "Var2")
+  
+  distMeltNoDupes <- map(.x = distMeltNoDupes,
+                         .f = ~ .x %>% 
+                           mutate(across(ends_with("Distance"), as.numeric)))
+  
+  # Add household type metadata to the melted data
+  hhTypeLUT <- sampleDataDF %>%
+    select(!!sym(sampleNameCol), bad_household_chr) %>%
+    deframe()
+  
+  distMeltHH <- map(.x = distMeltNoDupes,
+                    .f = ~ .x %>%
+                      mutate(Var1_Type = hhTypeLUT[Var1],
+                             Var2_Type = hhTypeLUT[Var2]))
+  
+  # Select bad-bad HH distances, and good-good HH distances
+  badHHDist <- map(.x = distMeltHH,
+                   .f = ~ filter(.x,
+                                 Var1_Type == "Bad Household" &
+                                   Var2_Type == "Bad Household"))
+  
+  goodHHDist <- map(.x = distMeltHH,
+                    .f = ~ filter(.x,
+                                  Var1_Type == "Good Household" &
+                                    Var2_Type == "Good Household"))
+  
+  # rbind good-good and bad-bad for UniFrac & Weighted UniFrac distances
+  uniFracDist <- rbind(badHHDist$UniFrac, goodHHDist$UniFrac)
+  wUniFracDist <- rbind(badHHDist$`Weighted UniFrac`,
+                        goodHHDist$`Weighted UniFrac`)
+  
+  # Make box plot of good versus bad HH average Unifrac & Weighted UniFrac distances
+  distBox <- pmap(.l = list(df = list("UniFrac" = uniFracDist,
+                                      "Weighted UniFrac" = wUniFracDist),
+                            yVar = list("UniFrac" = "UniFrac_Distance",
+                                        "Weighted UniFrac" = "WUniFrac_Distance"),
+                            plotTitle = names(distances),
+                            label_y = list("UniFrac" = "UniFrac Distance",
+                                           "Weighted UniFrac" = "Weighted UniFrac Distance")),
+                  .f = PrettyBox,
+                  xVar = "Var1_Type",
+                  statMethod = "kruskal.test",
+                  colorVals = c("Bad Household" = "#FF0700",
+                                "Good Household" = "#EB3BEB"))
+  
+  distBoxArr <- annotate_figure(grid.arrange(distBox$UniFrac,
+                                             distBox$`Weighted UniFrac`,
+                                             ncol = 2, nrow = 1),
+                                top = text_grob(paste(dataName, "Data\nAvg. Distances of Good and Bad Households"),
+                                                      size = 14),
+                                bottom = text_grob("Household Type", size = 12))
+  
+  return(distBoxArr)
+  
+}
+```
+
+```{r pairwiseDistPlots, fig.show='hide'}
+
+pairwiseDistPlots <- pmap(.l = list(physeqObj = physeqListRare,
+                                    sampleDataDF = sampleDataRare,
+                                    sampleNameCol = list("rdp" = "sample",
+                                                         "silva" = "sequencing_file_name"),
+                                    dataName = list("rdp" = "RDP",
+                                                    "silva" = "SILVA")),
+                          .f = PlotPairwiseDist)
+```
+
+```{r display-pairwise-dist-plots}
+pairwiseDistPlots
+```
+
+<br>
+<br>
+
+### **Biomarker Analysis with DESeq2**
+
+```{r set-reactive-vars-for-biomarker-analysis}
+# numerator and denominator options for each comparison
+numeratorLUT <- reactiveValues()
+numeratorLUT$`CRPS vs. BioBank` <- "CRPS"
+numeratorLUT$`CRPS vs. Household Controls` <- "CRPS"
+numeratorLUT$`Acute CRPS vs. Chronic CRPS` <- "Acute"
+numeratorLUT$`Good Households vs. Bad Households` <- "Bad Household"
+
+denominatorLUT <- reactiveValues()
+denominatorLUT$`CRPS vs. BioBank` <- "BioBank_Control"
+denominatorLUT$`CRPS vs. Household Controls` <- "HHC"
+denominatorLUT$`Acute CRPS vs. Chronic CRPS` <- "Chronic"
+denominatorLUT$`Good Households vs. Bad Households` <- "Good Household"
+```
+
+```{r GenerateDESeqResultsModified}
+GenerateDESeqResultsModified <- function(physeq, variable, numerator, denominator) {
+  
+  # Returns DESeq Results as Formal Class "DESeqResults"
+  # Create formula from string variable
+  formula <- as.formula(paste("~", variable, sep = " "))
+  # Convert to deseq data set object
+  ds <- phyloseq_to_deseq2(physeq, design = formula)
+  # work-around
+  counts <- counts(ds)
+  geoMeans <- apply(counts, 1,
+                      function(row) {if (all(row == 0)) 0 else exp(mean(log(row[row != 0])))})
+  dds <- estimateSizeFactors(ds, geoMeans = geoMeans)
+  # Run analysis
+  ddsAnalysis <- DESeq(dds, test = "Wald", fitType = "local", betaPrior = FALSE)
+  # Extract and format results
+  ddsResults <- results(ddsAnalysis,
+                        contrast = c(variable, numerator, denominator)) 
+}
+```
+
+
+```{r deseq-analysis}
+
+#----- UI -----#
+
+fluidRow(
+  column(5,
+         wellPanel(
+           selectInput(inputId = "biomarkerComparison",
+                       label = "Select Comparison",
+                       choices = c("CRPS vs. BioBank",
+                                   "CRPS vs. Household Controls",
+                                   "Acute CRPS vs. Chronic CRPS",
+                                   "Good Households vs. Bad Households"),
+                       selected = "CRPS vs. BioBank"),
+           actionButton(inputId = "updateBiomarkers",
+                        label = "Update DESeq Analysis",
+                        icon = icon("fas fa-sync-alt"))
+           )
+         )
+  )
+
+#----- React -----#
+
+# Set initial value of biomarkerComparison
+BiomarkerComparison <- reactive({
+  biomarkerComparison <- input$biomarkerComparison
+  
+  if (is.null(biomarkerComparison)) {
+    biomarkerComparison <- "CRPS vs. BioBank"
+  }
+  
+  return(biomarkerComparison)
+})
+
+SubsetPhyseqBiomarkers <- eventReactive(input$updateBiomarkers, {
+  
+  selectedComparison <- BiomarkerComparison()
+  
+  # select appropriate samples based on selectedComparison
+  # this only needs to be done with one of the two sample data frames since
+  #   the set of samples is the same
+  
+  keepSamplesRDP <- dfSubsetList[[selectedComparison]] %>% 
+    pull(sample) %>% 
+    as.character()
+  
+  keepSamplesSILVA <- dfSubsetList[[selectedComparison]] %>%
+    pull(sequencing_file_name) %>%
+    as.character()
+
+  physeqSubsetList <- map2(.x = physeqListRare,
+                           .y = list("rdp" = keepSamplesRDP,
+                                     "silva" = keepSamplesSILVA),
+                           .f = ~ prune_samples(samples = .y,
+                                                x = .x))
+  
+  return(physeqSubsetList)
+  
+  
+}, ignoreNULL = FALSE)
+
+RunDESeq <- eventReactive(input$updateBiomarkers, {
+  
+  withProgress(message = "Conducting DESeq2 Analysis...", value = 1, {
+    
+    colName <- colNameLUT[[BiomarkerComparison()]]
+    numeratorVar <- numeratorLUT[[BiomarkerComparison()]]
+    denominatorVar <- denominatorLUT[[BiomarkerComparison()]]
+    
+    deseqResList <- map(.x = SubsetPhyseqBiomarkers(),
+                        .f = ~ GenerateDESeqResultsModified(physeq = .x,
+                                                           variable = colName,
+                                                           numerator = numeratorVar,
+                                                           denominator = denominatorVar))
+    
+  })
+  
+}, ignoreNULL = FALSE)
+
+DESeqRes <- eventReactive(input$updateBiomarkers, {
+  deseqResTables <- map2(.x = SubsetPhyseqBiomarkers(),
+                         .y = RunDESeq(),
+                         .f = ~ GenerateDESeqResultsTable(physeq = .x,
+                                                          sigThreshold = 0.05,
+                                                          ddsResults = .y))
+}, ignoreNULL = FALSE)
+```
+
+<br>
+
+<h4>RDP Data:</h4>
+
+```{r rdp-biomarker-plot}
+renderPlotly({
+  volcano <- PlotStaticVolcano(physeq = SubsetPhyseqBiomarkers()$rdp,
+                               resultsDataTable = DESeqRes()$rdp,
+                               sigThreshold = 0.05,
+                               plotTitle = paste("Differentially Abundant Taxa\n",
+                                                 denominatorLUT[[isolate(BiomarkerComparison())]],
+                                                 "(-L2FC) vs",
+                                                 numeratorLUT[[isolate(BiomarkerComparison())]],
+                                                 "(+ L2FC)\n RDP Data"))
+  
+  ggplotly(volcano, tooltip = c("Phylum", "Family", "Genus", "Species",
+                                "log2FoldChange", "baseMean"),
+           height = 550, width = 900)
+})
+```
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+---
+
+<br>
+
+<h4>SILVA Data</h4>
+
+```{r silva-biomarker-plot}
+renderPlotly({
+  volcano <- PlotStaticVolcano(physeq = SubsetPhyseqBiomarkers()$silva,
+                               resultsDataTable = DESeqRes()$silva,
+                               sigThreshold = 0.05,
+                               plotTitle = paste("Differentially Abundant Taxa\n",
+                                                 denominatorLUT[[isolate(BiomarkerComparison())]],
+                                                 "(-L2FC) vs",
+                                                 numeratorLUT[[isolate(BiomarkerComparison())]],
+                                                 "(+ L2FC)\n SILVA Data"))
+  
+  ggplotly(volcano, tooltip = c("Phylum", "Family", "Genus", "Species",
+                                "log2FoldChange", "baseMean"),
+           height = 550, width = 900)
+})
+```
+
+<br>
+<br>
+
+### Session Info
+
+```{r session-info}
+Sys.Date()
+getwd()
+sessionInfo()
+```
+

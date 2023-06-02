@@ -19,7 +19,10 @@ rdpCols <- colnames(sampleDataRDP)
 # in the combined sample data, only keep columns from SILVA not already in RDP
 sampleDataCombined <- sampleDataSILVA %>% 
   select(sample, silvaCols[!silvaCols %in% rdpCols]) %>% 
-  merge(sampleDataRDP, by = "sample", all = FALSE)
+  merge(sampleDataRDP, by = "sample", all = FALSE) %>%
+  mutate(bad_household_chr = ifelse(bad_household == TRUE,
+                                    yes = "Bad Household",
+                                    no = "Good Household"))
 
 #----- RDP v16-----#
 # originally 69 samples
