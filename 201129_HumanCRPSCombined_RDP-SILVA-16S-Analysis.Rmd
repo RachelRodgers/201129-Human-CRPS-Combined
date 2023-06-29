@@ -642,7 +642,8 @@ fluidRow(
                        choices = c("CRPS vs. BioBank",
                                    "CRPS vs. Household Controls",
                                    "Acute CRPS vs. Chronic CRPS",
-                                   "Good Households vs. Bad Households"),
+                                   "Good Households vs. Bad Households",
+                                   "HHC Pain vs. HHC No Pain"),
                        selected = "CRPS vs. BioBank"),
            # select distance measure
            selectInput(inputId = "betaDistance",
@@ -676,6 +677,7 @@ crpsBB <- df %>% filter(Sample_Type %in% c("CRPS", "BioBank_Control"))
 crpsHHC <- df %>% filter(Sample_Type %in% c("CRPS", "HHC"))
 crpsType <- df %>% filter(Description %in% c("Acute", "Chronic"))
 hhcType <- df %>% filter(!is.na(bad_household_chr))
+hhc <- df %>% filter(status_household_description %in% c("HHC_bad_household", "HHC_good_household"))
 
 # store in reactive value so accessible to shiny:
 dfSubsetList <- reactiveValues()
@@ -683,6 +685,7 @@ dfSubsetList$`CRPS vs. BioBank` <- crpsBB
 dfSubsetList$`CRPS vs. Household Controls` <- crpsHHC
 dfSubsetList$`Acute CRPS vs. Chronic CRPS` <- crpsType
 dfSubsetList$`Good Households vs. Bad Households` <- hhcType
+dfSubsetList$`HHC Pain vs. HHC No Pain` <- hhc
 
 #----- Column Names Corresponding to Selected Comparison -----#
 # store the corresponding variable colname in reactive value:
@@ -691,6 +694,7 @@ colNameLUT$`CRPS vs. BioBank` <- "Sample_Type"
 colNameLUT$`CRPS vs. Household Controls` <- "Sample_Type"
 colNameLUT$`Acute CRPS vs. Chronic CRPS` <- "Description"
 colNameLUT$`Good Households vs. Bad Households` <- "bad_household_chr"
+colNameLUT$`HHC Pain vs. HHC No Pain` <- "status_household_description"
 
 #----- Color and Shape Customizations for Plots -----#
 colorVector <- reactiveValues()
@@ -702,6 +706,8 @@ colorVector$`Acute CRPS vs. Chronic CRPS` <- c("Acute" = "#CC66FF",
                                                "Chronic" = "#408002")
 colorVector$`Good Households vs. Bad Households` <- c("Good Household" = "#EB3BEB",
                                                       "Bad Household" = "#FF0700")
+colorVector$`HHC Pain vs. HHC No Pain` <- c("HHC_bad_household" = "#FF0700",
+                                            "HHC_good_household" = "#EB3BEB")
 
 shapeVector <- reactiveValues()
 shapeVector$`CRPS vs. BioBank` <- c("CRPS" = 15, "BioBank_Control" = 16)
@@ -709,6 +715,8 @@ shapeVector$`CRPS vs. Household Controls` <- c("CRPS" = 15, "HHC" = 16)
 shapeVector$`Acute CRPS vs. Chronic CRPS` <- c("Acute" = 17, "Chronic" = 18)
 shapeVector$`Good Households vs. Bad Households` <- c("Good Household" = 18, 
                                                       "Bad Household" = 17)
+shapeVector$`HHC Pain vs. HHC No Pain` <- c("HHC_bad_household" = 17,
+                                            "HHC_good_household" = 18)
 ```
 
 ```{r beta-diversity-reactive}
@@ -835,6 +843,8 @@ renderPlot({
     legendName <- "CRPS Type"
   } else if (isolate(BetaComparison()) == "Good Households vs. Bad Households") {
     legendName <- "Household Type"
+  } else if (isolate(BetaComparison()) == "HHC Pain vs. HHC No Pain") {
+    legendName <- "Household Control Type"
   }
   
   basePlot <- plot_ordination(physeq = SubsetPhyseq()$rdp,
@@ -900,6 +910,8 @@ renderPlot({
     legendName <- "CRPS Type"
   } else if (isolate(BetaComparison()) == "Good Households vs. Bad Households") {
     legendName <- "Household Type"
+  } else if (isolate(BetaComparison()) == "HHC Pain vs. HHC No Pain") {
+    legendName <- "Household Control Type"
   }
   
   basePlot <- plot_ordination(physeq = SubsetPhyseq()$silva,
@@ -1164,12 +1176,15 @@ numeratorLUT$`CRPS vs. BioBank` <- "CRPS"
 numeratorLUT$`CRPS vs. Household Controls` <- "CRPS"
 numeratorLUT$`Acute CRPS vs. Chronic CRPS` <- "Acute"
 numeratorLUT$`Good Households vs. Bad Households` <- "Bad Household"
+numeratorLUT$`HHC Pain vs. HHC No Pain` <- "HHC_bad_household"
+
 
 denominatorLUT <- reactiveValues()
 denominatorLUT$`CRPS vs. BioBank` <- "BioBank_Control"
 denominatorLUT$`CRPS vs. Household Controls` <- "HHC"
 denominatorLUT$`Acute CRPS vs. Chronic CRPS` <- "Chronic"
 denominatorLUT$`Good Households vs. Bad Households` <- "Good Household"
+denominatorLUT$`HHC Pain vs. HHC No Pain` <- "HHC_good_household"
 ```
 
 ```{r GenerateDESeqResultsModified}
@@ -1193,7 +1208,6 @@ GenerateDESeqResultsModified <- function(physeq, variable, numerator, denominato
 }
 ```
 
-
 ```{r deseq-analysis}
 
 #----- UI -----#
@@ -1206,7 +1220,8 @@ fluidRow(
                        choices = c("CRPS vs. BioBank",
                                    "CRPS vs. Household Controls",
                                    "Acute CRPS vs. Chronic CRPS",
-                                   "Good Households vs. Bad Households"),
+                                   "Good Households vs. Bad Households",
+                                   "HHC Pain vs. HHC No Pain"),
                        selected = "CRPS vs. BioBank"),
            actionButton(inputId = "updateBiomarkers",
                         label = "Update DESeq Analysis",
