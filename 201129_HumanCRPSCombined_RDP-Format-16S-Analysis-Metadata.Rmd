@@ -1,5 +1,5 @@
 ---
-title: "201129_HumanCRPSCombined_Format-RDP-Metadata"
+title: "201129_HumanCRPSCombined_RDP-Format-16S-Analysis-Metadata"
 author: "Rachel Rodgers"
 date: "`r Sys.Date()`"
 output: html_document
@@ -11,7 +11,7 @@ library("readxl")
 library("tidyverse")
 ```
 
-Code originally from 201129_Human_CRPS_Combined_FormatMetadata.R
+## Generate RDP Metadata File for 16S Analysis
 
 ```{r mappingFileList}
 mappingFileList <- c("run1" = "mappingFile_190201.txt",
@@ -27,66 +27,7 @@ mappingFiles <- map(paste0("../documents/RDP/", mappingFileList), read.delim,
 names(mappingFiles) <- names(mappingFileList)
 ```
 
-## Format RDP Data for Demuxing
-
-### Generate RDP Metadata File for Demultiplexing
-
-```{r mapping-file-for-demultiplexing}
-# Contains only the data necessary for demuxing.
-
-# Find common column names among files
-allColNames <- map(mappingFiles, names)
-commonColNames <- Reduce(f = intersect, x = allColNames)
-
-# For each mapping file, pull out these common columns and add a run column
-trimmedMapFileList <- vector(mode = "list", length = length(mappingFiles))
-  
-for (i in 1:length(mappingFiles)) {
-  
-  currentRun <- names(mappingFiles)[i]
-  currentMap <- mappingFiles[[i]]
-  
-  trimmedDF <- currentMap %>% 
-    select(all_of(commonColNames)) %>% 
-    mutate("run" = currentRun) %>% 
-    select(`#SampleID`, BarcodeSequence, LinkerPrimerSequence, run, Description)
-  
-  trimmedMapFileList[[i]] <- trimmedDF
-  names(trimmedMapFileList)[i] <- currentRun
-  
-}
-
-# Combine the trimmed mapping files
-combinedMap <- Reduce(f = rbind, x = trimmedMapFileList)
-
-# Remove "CRPS Mouse", format the Description column, add other needed columns
-# Correct Baldridge34A which should have Description "Acute", not "Control"
-table(combinedMap$Description)
-#combinedMap[combinedMap$`#SampleID` == "Baldridge34A", "Description"] <- "Acute"
-
-combinedMapFmt <- combinedMap %>% 
-  filter(Description != "CRPS mouse") %>% 
-  mutate(Description = trimws(Description),
-         Description = str_replace(Description, 
-                                   pattern = " ", replacement = "_"),
-         Sample_Type = case_when(Description %in% c("Acute", "Chronic") ~ "CRPS",
-                                 Description == "Control" ~ "HHC",
-                                 TRUE ~ Description),
-         Sample_Status = case_when(Description %in% c("Acute", "Chronic") ~ "CRPS",
-                                   Description %in% c("Control", "BioBank_Control") ~ "healthy",
-                                   TRUE ~ Description)) %>% 
-  select(`#SampleID`, BarcodeSequence, LinkerPrimerSequence, run, Sample_Type,
-         Sample_Status, Description)
-
-table(combinedMapFmt$Description)
-```
-
-```{r save-mappingFile_201129_Human_CRPS_Combined.txt, eval=FALSE}
-write.table(combinedMapFmt, file = "../data/RDP/mappingFile_201129_Human_CRPS_Combined.txt",
-            quote = FALSE, sep = "\t", row.names = FALSE)
-```
-
-### Generate RDP Metadata File for 16S Analysis
+### Add Run Numbers
 
 ```{r add-run-number}
 # Contains all metadata.
@@ -197,7 +138,7 @@ sampleDataModified <- sampleDataModified %>%
 ```
 
 ```{r save-sampleDataModified, eval=FALSE}
-saveRDS(sampleDataModified, "../data/RDP/RDataObjects/sampleDataModified.RDS")
+saveRDS(sampleDataModified, "../data/RDP/RDataObjects/sampleDataModifiedRDP.RDS")
 ```
 
 #### Add Reads per Sample
@@ -256,5 +197,5 @@ sampleDataFinal <- sampleDataModified %>%
 ```
 
 ```{r save-sampleDataFinal, eval=FALSE}
-saveRDS(sampleDataFinal, "../data/RDP/RDataObjects/sampleDataFinal.RDS")
+saveRDS(sampleDataFinal, "../data/RDP/RDataObjects/sampleDataFinalRDP.RDS")
 ```

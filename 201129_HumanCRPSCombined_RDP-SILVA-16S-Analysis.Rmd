@@ -955,9 +955,7 @@ renderPlot({
 
 <h3>Pairwise UniFrac & Weighted UniFrac Distances of Good and Bad Households</h3>
 
-When looking at the pairwise distances between samples from good and bad households, 
-the RDP and SILVA data shows significantly lower average distance between samples from good 
-households compared to bad when using the weighted UniFrac distance measure.
+These plots are comparing the pairwise distances between matched samples (household control + household CRPS sample) from good and bad households. Neither the RDP nor SILVA data set shows a significant difference in the average distance between matched samples in houses with or without pain.
 
 ```{r pairwise-distances-rdp, eval=FALSE, include=FALSE}
 # RDP Data
@@ -1068,7 +1066,7 @@ PlotPairwiseDist <- function(physeqObj, sampleDataDF, sampleNameCol,
   
   # Calculate the distance objects
   set.seed(16738558)
-
+  
   distances <- map(.x = list("UniFrac" = FALSE, "Weighted UniFrac" = TRUE),
                    .f = ~ as.matrix(phyloseq::UniFrac(physeq = physeqObj,
                                                       weighted = .x)))
@@ -1107,21 +1105,35 @@ PlotPairwiseDist <- function(physeqObj, sampleDataDF, sampleNameCol,
                       mutate(Var1_Type = hhTypeLUT[Var1],
                              Var2_Type = hhTypeLUT[Var2]))
   
+  # Add household designation so only pairwise members from the same
+  #   households are selected
+  householdLUT <- sampleDataCombined %>% 
+    select(!!sym(sampleNameCol), household) %>% 
+    deframe()
+  
+  distMeltHH <- map(.x = distMeltHH,
+                    .f = ~ .x %>% 
+                      mutate(Var1_HH = householdLUT[Var1],
+                             Var2_HH = householdLUT[Var2]))
+  
   # Select bad-bad HH distances, and good-good HH distances
   badHHDist <- map(.x = distMeltHH,
                    .f = ~ filter(.x,
                                  Var1_Type == "Bad Household" &
-                                   Var2_Type == "Bad Household"))
+                                   Var2_Type == "Bad Household" &
+                                   Var1_HH == Var2_HH))
   
   goodHHDist <- map(.x = distMeltHH,
                     .f = ~ filter(.x,
                                   Var1_Type == "Good Household" &
-                                    Var2_Type == "Good Household"))
+                                    Var2_Type == "Good Household" &
+                                    Var1_HH == Var2_HH))
   
   # rbind good-good and bad-bad for UniFrac & Weighted UniFrac distances
   uniFracDist <- rbind(badHHDist$UniFrac, goodHHDist$UniFrac)
   wUniFracDist <- rbind(badHHDist$`Weighted UniFrac`,
                         goodHHDist$`Weighted UniFrac`)
+
   
   # Make box plot of good versus bad HH average Unifrac & Weighted UniFrac distances
   distBox <- pmap(.l = list(df = list("UniFrac" = uniFracDist,

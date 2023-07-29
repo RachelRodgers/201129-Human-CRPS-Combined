@@ -31,7 +31,7 @@ Here I will use the data contained in the compiled metadata to select just the
 required samples.
 
 ```{r select-samples}
-sampleData <- readRDS("../data/RDataObjects/sampleDataFinal.RDS")
+sampleData <- readRDS("../data/SILVA/RDataObjects/sampleDataFinalSILVA.RDS")
 
 includeSamples <- sampleData %>% 
   filter(!is.na(R1_file_name)) %>% 
@@ -135,14 +135,27 @@ save.image()
 ```
 
 ```{r build-phyloseq-objects}
-dir.create("../data/RDataObjects/physeqObjects")
+dir.create("../data/SILVA/RDataObjects/physeqObjects")
 
 # silva
 ps0.silva <- phyloseq(otu_table(sequenceTableNoChimeras, taxa_are_rows = FALSE),
                       tax_table(taxaSilvaPlus), phy_tree(fitGTR$tree))
 ps0.silva # 2688 x 118
-saveRDS(ps0.silva, "../data/RDataObjects/physeqObjects/ps0.silva_single.RDS")
+saveRDS(ps0.silva, "../data/SILVA/RDataObjects/physeqObjects/ps0.silva_single.RDS")
 
+```
+
+Modify Reads Per Sample to match the SILVA phyloseq Object
+
+```{r add-reads-per-sample}
+#physeqRaw <- readRDS("../data/SILVA/RDataObjects/physeqObjects/ps0.silva_single.RDS")
+readsPerSample <- sample_sums(ps0.silva)
+
+sampleDataFinal <- mutate(sampleDataFinal,
+                          "readsPerSampleSILVA" = readsPerSample[sequencing_file_name])
+
+# overwrite the old SILVA sampleDataFinal
+saveRDS(sampleDataFinal, "../data/SILVA/RDataObjects/sampleDataFinalSILVA.RDS")
 ```
 
 ```{r save-data}

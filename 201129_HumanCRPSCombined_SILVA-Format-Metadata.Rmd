@@ -218,9 +218,8 @@ sampleDataFinal <- newDataMergedLWC %>%
   select(sample, sequencing_file_name, run, everything())
 ```
 
+```{r add-reads-per-sample, eval=FALSE, include=FALSE}
 ## Modify Reads Per Sample to match the physeqSILVA Object
-
-```{r add-reads-per-sample}
 physeqRaw <- readRDS("../data/SILVA/RDataObjects/physeqObjects/ps0.silva_single.RDS")
 readsPerSample <- sample_sums(physeqRaw)
 
@@ -229,6 +228,6 @@ sampleDataFinal <- mutate(sampleDataFinal,
 ```
 
 ```{r save-sample-data-final, eval=FALSE}
-saveRDS(sampleDataFinal, "../data/SILVA/RDataObjects/sampleDataFinal.RDS")
+saveRDS(sampleDataFinal, "../data/SILVA/RDataObjects/sampleDataFinalSILVA.RDS")
 ```
 

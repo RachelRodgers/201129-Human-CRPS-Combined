@@ -8,8 +8,8 @@ library("tidyverse")
 #----- Generate Combined Metadata from RDP & SILVA -----#
 
 # sample data was originally formatted separately for each data set
-sampleDataRDP <- readRDS("../data/RDP/RDataObjects/sampleDataFinal.RDS")
-sampleDataSILVA <- readRDS("../data/SILVA/RDataObjects/sampleDataFinal.RDS")
+sampleDataRDP <- readRDS("../data/RDP/RDataObjects/sampleDataFinalRDP.RDS")
+sampleDataSILVA <- readRDS("../data/SILVA/RDataObjects/sampleDataFinalSILVA.RDS")
 
 # select columns to combine together
 silvaCols <- colnames(sampleDataSILVA)
