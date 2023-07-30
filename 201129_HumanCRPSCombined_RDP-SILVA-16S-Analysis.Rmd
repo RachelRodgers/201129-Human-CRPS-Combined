@@ -1107,7 +1107,7 @@ PlotPairwiseDist <- function(physeqObj, sampleDataDF, sampleNameCol,
   
   # Add household designation so only pairwise members from the same
   #   households are selected
-  householdLUT <- sampleDataCombined %>% 
+  householdLUT <- sampleDataDF %>% 
     select(!!sym(sampleNameCol), household) %>% 
     deframe()
   
