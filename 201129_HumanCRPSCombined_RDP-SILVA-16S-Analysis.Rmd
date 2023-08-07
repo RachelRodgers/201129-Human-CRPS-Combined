@@ -54,13 +54,6 @@ This is a 16S analysis of human CRPS data from across five sequencing runs:
 The taxa have been annotated with both RDP (v16) and SILVA (v138.1) training sets.
 The analyses of both data sets will be compared.
 
-The following comparisons are analyzed:
-  
-  1. CRPS vs BioBank Controls
-  2. CRPS vs Household Controls
-  3. "Bad" households vs "Good" households
-  4. Acute CRPS vs Chronic CRPS
-
 <br>
 <br>
 
@@ -624,7 +617,8 @@ renderPlot({
 <h3>PCoA Plots</h3>
 
 In the RDP and SILVA data, grouping of samples is significant by household status 
-(good vs. bad) for both UniFrac and weighted UniFrac distance measures.
+(good vs. bad) for both UniFrac and weighted UniFrac distance measures. It is
+also significant for CRPS Pain vs. CRPS No Pain for UniFrac distance.
 
 The grouping of samples is also significant between CRPS and BioBank controls
 in both the RDP and SILVA data sets when using the weighted UniFrac distance measure.
@@ -643,7 +637,8 @@ fluidRow(
                                    "CRPS vs. Household Controls",
                                    "Acute CRPS vs. Chronic CRPS",
                                    "Good Households vs. Bad Households",
-                                   "HHC Pain vs. HHC No Pain"),
+                                   "HHC Pain vs. HHC No Pain",
+                                   "CRPS Pain vs. CRPS No Pain"),
                        selected = "CRPS vs. BioBank"),
            # select distance measure
            selectInput(inputId = "betaDistance",
@@ -678,6 +673,7 @@ crpsHHC <- df %>% filter(Sample_Type %in% c("CRPS", "HHC"))
 crpsType <- df %>% filter(Description %in% c("Acute", "Chronic"))
 hhcType <- df %>% filter(!is.na(bad_household_chr))
 hhc <- df %>% filter(status_household_description %in% c("HHC_bad_household", "HHC_good_household"))
+crps <- df %>% filter(status_household_description %in% c("CRPS_bad_household", "CRPS_good_household"))
 
 # store in reactive value so accessible to shiny:
 dfSubsetList <- reactiveValues()
@@ -686,6 +682,7 @@ dfSubsetList$`CRPS vs. Household Controls` <- crpsHHC
 dfSubsetList$`Acute CRPS vs. Chronic CRPS` <- crpsType
 dfSubsetList$`Good Households vs. Bad Households` <- hhcType
 dfSubsetList$`HHC Pain vs. HHC No Pain` <- hhc
+dfSubsetList$`CRPS Pain vs. CRPS No Pain` <- crps
 
 #----- Column Names Corresponding to Selected Comparison -----#
 # store the corresponding variable colname in reactive value:
@@ -695,6 +692,7 @@ colNameLUT$`CRPS vs. Household Controls` <- "Sample_Type"
 colNameLUT$`Acute CRPS vs. Chronic CRPS` <- "Description"
 colNameLUT$`Good Households vs. Bad Households` <- "bad_household_chr"
 colNameLUT$`HHC Pain vs. HHC No Pain` <- "status_household_description"
+colNameLUT$`CRPS Pain vs. CRPS No Pain` <- "status_household_description"
 
 #----- Color and Shape Customizations for Plots -----#
 colorVector <- reactiveValues()
@@ -708,6 +706,8 @@ colorVector$`Good Households vs. Bad Households` <- c("Good Household" = "#EB3BE
                                                       "Bad Household" = "#FF0700")
 colorVector$`HHC Pain vs. HHC No Pain` <- c("HHC_bad_household" = "#FF0700",
                                             "HHC_good_household" = "#EB3BEB")
+colorVector$`CRPS Pain vs. CRPS No Pain` <- c("CRPS_bad_household" = "#FF0700",
+                                              "CRPS_good_household" = "#EB3BEB")
 
 shapeVector <- reactiveValues()
 shapeVector$`CRPS vs. BioBank` <- c("CRPS" = 15, "BioBank_Control" = 16)
@@ -717,6 +717,8 @@ shapeVector$`Good Households vs. Bad Households` <- c("Good Household" = 18,
                                                       "Bad Household" = 17)
 shapeVector$`HHC Pain vs. HHC No Pain` <- c("HHC_bad_household" = 17,
                                             "HHC_good_household" = 18)
+shapeVector$`CRPS Pain vs. CRPS No Pain` <- c("CRPS_bad_household" = 17,
+                                              "CRPS_good_household" = 18)
 ```
 
 ```{r beta-diversity-reactive}
@@ -1189,6 +1191,7 @@ numeratorLUT$`CRPS vs. Household Controls` <- "CRPS"
 numeratorLUT$`Acute CRPS vs. Chronic CRPS` <- "Acute"
 numeratorLUT$`Good Households vs. Bad Households` <- "Bad Household"
 numeratorLUT$`HHC Pain vs. HHC No Pain` <- "HHC_bad_household"
+numeratorLUT$`CRPS Pain vs. CRPS No Pain` <- "CRPS_bad_household"
 
 
 denominatorLUT <- reactiveValues()
@@ -1197,6 +1200,7 @@ denominatorLUT$`CRPS vs. Household Controls` <- "HHC"
 denominatorLUT$`Acute CRPS vs. Chronic CRPS` <- "Chronic"
 denominatorLUT$`Good Households vs. Bad Households` <- "Good Household"
 denominatorLUT$`HHC Pain vs. HHC No Pain` <- "HHC_good_household"
+denominatorLUT$`CRPS Pain vs. CRPS No Pain` <- "CRPS_good_household"
 ```
 
 ```{r GenerateDESeqResultsModified}
@@ -1233,7 +1237,8 @@ fluidRow(
                                    "CRPS vs. Household Controls",
                                    "Acute CRPS vs. Chronic CRPS",
                                    "Good Households vs. Bad Households",
-                                   "HHC Pain vs. HHC No Pain"),
+                                   "HHC Pain vs. HHC No Pain",
+                                   "CRPS Pain vs. CRPS No Pain"),
                        selected = "CRPS vs. BioBank"),
            actionButton(inputId = "updateBiomarkers",
                         label = "Update DESeq Analysis",
