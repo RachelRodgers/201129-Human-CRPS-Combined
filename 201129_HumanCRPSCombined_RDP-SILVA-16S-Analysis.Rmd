@@ -41,6 +41,7 @@ source("./shared_R_scripts/BiomarkerHelpers.R")
 options(shiny.sanitize.errors = FALSE)
 ```
 
+
 ## Overview {.tabset}
 
 This is a 16S analysis of human CRPS data from across five sequencing runs:
@@ -98,9 +99,24 @@ physeqList <- list("rdp" = physeqBacteriaRDP,
 sampleDataList <- map(.x = physeqList,
                       .f = ~ as(sample_data(.), "data.frame"))
 
+# Add a pain_type column to the sample data of both phyloseq objects that
+#   uses sample_status_2 to categorize "badCRPS" and "goodCRPS" as "All-CRPS,"
+#   and "badHHC" as "HHC-Pain"
+sampleDataList <- map(.x = sampleDataList,
+                      .f = ~ .x %>% 
+                        mutate("pain_type" = case_when(sample_status_2 == "badCRPS" ~ "All-CRPS",
+                                                       sample_status_2 == "goodCRPS" ~ "All-CRPS",
+                                                       sample_status_2 == "badHHC" ~ "HHC-pain",
+                                                       TRUE ~ NA)) %>% 
+                        relocate("pain_type", .after = "sample_status_2"))
+
+sample_data(physeqList$rdp) <- sample_data(sampleDataList$rdp)
+sample_data(physeqList$silva) <- sample_data(sampleDataList$silva)
+
 varsOfInterest <- c("Sample Type" = "Sample_Type",
                     "Household Type" = "bad_household",
-                    "CRPS Type" = "Description")
+                    "CRPS Type" = "Description",
+                    "Pain Type" = "pain_type")
 ```
 
 <br>
@@ -501,7 +517,8 @@ sampleDataRareAlpha <- pmap(.l = list(x = sampleDataRare,
 FilterAlphaDF <- function(df) {
   
   varsNeedFiltering <- c("Household Type" = "bad_household",
-                         "CRPS Type" = "Description")
+                         "CRPS Type" = "Description",
+                         "Pain Type" = "pain_type")
   
   # Household Type
   alphaDFHHType <- df %>% 
@@ -513,9 +530,14 @@ FilterAlphaDF <- function(df) {
   alphaDFCRPSType <- df %>% 
     filter(Description %in% c("Acute", "Chronic"))
   
+  # Pain Type
+  alphaDFPainType <- df %>% 
+    filter(!is.na(pain_type))
+  
   alphaDFList <- list("Sample_Type" = df,
                       "bad_household" = alphaDFHHType,
-                      "Description" = alphaDFCRPSType)
+                      "Description" = alphaDFCRPSType,
+                      "pain_type" = alphaDFPainType)
   
   return(alphaDFList)
 }
@@ -551,7 +573,10 @@ AlphaStatMethod <- reactive({
   return(useMethod)
 })
 
+
+
 AlphaPlotsRDP <- reactive({
+  
   alphaPlotsRDP <- pmap(.l = list(yVar = alphaIdxList,
                                   yLab = names(alphaIdxList),
                                   alphaPlotTitle = names(alphaIdxList)),
@@ -638,7 +663,8 @@ fluidRow(
                                    "Acute CRPS vs. Chronic CRPS",
                                    "Good Households vs. Bad Households",
                                    "HHC Pain vs. HHC No Pain",
-                                   "CRPS Pain vs. CRPS No Pain"),
+                                   "CRPS Pain vs. CRPS No Pain",
+                                   "All CRPS vs. HHC Pain"),
                        selected = "CRPS vs. BioBank"),
            # select distance measure
            selectInput(inputId = "betaDistance",
@@ -672,8 +698,11 @@ crpsBB <- df %>% filter(Sample_Type %in% c("CRPS", "BioBank_Control"))
 crpsHHC <- df %>% filter(Sample_Type %in% c("CRPS", "HHC"))
 crpsType <- df %>% filter(Description %in% c("Acute", "Chronic"))
 hhcType <- df %>% filter(!is.na(bad_household_chr))
-hhc <- df %>% filter(status_household_description %in% c("HHC_bad_household", "HHC_good_household"))
-crps <- df %>% filter(status_household_description %in% c("CRPS_bad_household", "CRPS_good_household"))
+hhc <- df %>% filter(status_household_description %in% c("HHC_bad_household", 
+                                                         "HHC_good_household"))
+crps <- df %>% filter(status_household_description %in% c("CRPS_bad_household", 
+                                                          "CRPS_good_household"))
+painType <- df %>% filter(!is.na(pain_type))
 
 # store in reactive value so accessible to shiny:
 dfSubsetList <- reactiveValues()
@@ -683,6 +712,7 @@ dfSubsetList$`Acute CRPS vs. Chronic CRPS` <- crpsType
 dfSubsetList$`Good Households vs. Bad Households` <- hhcType
 dfSubsetList$`HHC Pain vs. HHC No Pain` <- hhc
 dfSubsetList$`CRPS Pain vs. CRPS No Pain` <- crps
+dfSubsetList$`All CRPS vs. HHC Pain` <- painType
 
 #----- Column Names Corresponding to Selected Comparison -----#
 # store the corresponding variable colname in reactive value:
@@ -693,6 +723,7 @@ colNameLUT$`Acute CRPS vs. Chronic CRPS` <- "Description"
 colNameLUT$`Good Households vs. Bad Households` <- "bad_household_chr"
 colNameLUT$`HHC Pain vs. HHC No Pain` <- "status_household_description"
 colNameLUT$`CRPS Pain vs. CRPS No Pain` <- "status_household_description"
+colNameLUT$`All CRPS vs. HHC Pain` <- "pain_type"
 
 #----- Color and Shape Customizations for Plots -----#
 colorVector <- reactiveValues()
@@ -708,6 +739,8 @@ colorVector$`HHC Pain vs. HHC No Pain` <- c("HHC_bad_household" = "#FF0700",
                                             "HHC_good_household" = "#EB3BEB")
 colorVector$`CRPS Pain vs. CRPS No Pain` <- c("CRPS_bad_household" = "#FF0700",
                                               "CRPS_good_household" = "#EB3BEB")
+colorVector$`All CRPS vs. HHC Pain` <- c("All-CRPS" = "#FB0101",
+                                         "HHC-pain" = "#3333CC")
 
 shapeVector <- reactiveValues()
 shapeVector$`CRPS vs. BioBank` <- c("CRPS" = 15, "BioBank_Control" = 16)
@@ -719,6 +752,8 @@ shapeVector$`HHC Pain vs. HHC No Pain` <- c("HHC_bad_household" = 17,
                                             "HHC_good_household" = 18)
 shapeVector$`CRPS Pain vs. CRPS No Pain` <- c("CRPS_bad_household" = 17,
                                               "CRPS_good_household" = 18)
+shapeVector$`All CRPS vs. HHC Pain` <- c("All-CRPS" = 15,
+                                         "HHC-pain" = 16)
 ```
 
 ```{r beta-diversity-reactive}
@@ -815,6 +850,7 @@ AdonisPVals <- eventReactive(input$betaUpdate, {
 
 }, ignoreNULL = FALSE)
 
+
 #observe(print(AdonisPVals()))
 
 ```
@@ -847,6 +883,8 @@ renderPlot({
     legendName <- "Household Type"
   } else if (isolate(BetaComparison()) == "HHC Pain vs. HHC No Pain") {
     legendName <- "Household Control Type"
+  } else if (isolate(BetaComparison()) == "All CRPS vs. HHC Pain") {
+    legendName <- "Pain Group"
   }
   
   basePlot <- plot_ordination(physeq = SubsetPhyseq()$rdp,
@@ -914,6 +952,8 @@ renderPlot({
     legendName <- "Household Type"
   } else if (isolate(BetaComparison()) == "HHC Pain vs. HHC No Pain") {
     legendName <- "Household Control Type"
+  } else if (isolate(BetaComparison()) == "All CRPS vs. HHC Pain") {
+    legendName <- "Pain Group"
   }
   
   basePlot <- plot_ordination(physeq = SubsetPhyseq()$silva,
@@ -1192,6 +1232,7 @@ numeratorLUT$`Acute CRPS vs. Chronic CRPS` <- "Acute"
 numeratorLUT$`Good Households vs. Bad Households` <- "Bad Household"
 numeratorLUT$`HHC Pain vs. HHC No Pain` <- "HHC_bad_household"
 numeratorLUT$`CRPS Pain vs. CRPS No Pain` <- "CRPS_bad_household"
+numeratorLUT$`All CRPS vs. HHC Pain` <- "HHC-pain"
 
 
 denominatorLUT <- reactiveValues()
@@ -1201,6 +1242,7 @@ denominatorLUT$`Acute CRPS vs. Chronic CRPS` <- "Chronic"
 denominatorLUT$`Good Households vs. Bad Households` <- "Good Household"
 denominatorLUT$`HHC Pain vs. HHC No Pain` <- "HHC_good_household"
 denominatorLUT$`CRPS Pain vs. CRPS No Pain` <- "CRPS_good_household"
+denominatorLUT$`All CRPS vs. HHC Pain` <- "All-CRPS"
 ```
 
 ```{r GenerateDESeqResultsModified}
@@ -1238,7 +1280,8 @@ fluidRow(
                                    "Acute CRPS vs. Chronic CRPS",
                                    "Good Households vs. Bad Households",
                                    "HHC Pain vs. HHC No Pain",
-                                   "CRPS Pain vs. CRPS No Pain"),
+                                   "CRPS Pain vs. CRPS No Pain",
+                                   "All CRPS vs. HHC Pain"),
                        selected = "CRPS vs. BioBank"),
            actionButton(inputId = "updateBiomarkers",
                         label = "Update DESeq Analysis",
